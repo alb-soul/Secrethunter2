@@ -39,7 +39,7 @@ import (
 )
 
 const (
-	version   = "2.0.0"
+	version   = "2.1.0"
 	defaultUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 	maxBodyMB = 10
 	banner    = `
@@ -541,11 +541,14 @@ func scanContentSeq(rawURL, content, contentLower string) []Finding {
 				continue
 			}
 			lineNum := li.lineAt(startPos)
+			lt := li.lineTextOf(content, lineNum)
 			if p.Name == "Twitter/X Bearer Token" || strings.HasPrefix(p.Name, "Square") {
-				lt := li.lineTextOf(content, lineNum)
 				if strings.Contains(lt, "base64,") || strings.Contains(lt, "data:") {
 					continue
 				}
+			}
+			if humanCredPatterns[p.Name] && isHumanCredFP(p.Name, match, lt) {
+				continue
 			}
 			patternName := p.Name
 			severity := p.Severity
@@ -658,11 +661,14 @@ func mergeCandidates(rawURL, content string, groups [][]patternCandidate) []Find
 			}
 			p := &patterns[c.pi]
 			lineNum := li.lineAt(c.startPos)
+			lt := li.lineTextOf(content, lineNum)
 			if p.Name == "Twitter/X Bearer Token" || strings.HasPrefix(p.Name, "Square") {
-				lt := li.lineTextOf(content, lineNum)
 				if strings.Contains(lt, "base64,") || strings.Contains(lt, "data:") {
 					continue
 				}
+			}
+			if humanCredPatterns[p.Name] && isHumanCredFP(p.Name, match, lt) {
+				continue
 			}
 			patternName := p.Name
 			severity := p.Severity
@@ -692,6 +698,184 @@ func mergeCandidates(rawURL, content string, groups [][]patternCandidate) []Find
 	return findings
 }
 
+
+// humanCredPattern marks pattern names that need extra anti-FP line checks.
+var humanCredPatterns = map[string]bool{
+	"HTML comment credentials (user:pass)":              true,
+	"JS/line comment credentials (user:pass)":            true,
+	"Block comment credentials (user:pass)":              true,
+	"Freeform credentials near keyword (user:pass)":      true,
+	"Password assignment (quoted or bare)":               true,
+	"Username + Password pair assignment":                true,
+	"Hardcoded password input value":                     true,
+	"Hardcoded password input value (value before type)": true,
+	"Generic Secret / Password in code":                  true,
+}
+
+// uiNoiseWords: values that look like secrets but are HTML/JS/UI noise.
+var uiNoiseWords = map[string]bool{
+	"required": true, "true": true, "false": true, "null": true, "undefined": true,
+	"password": true, "passwd": true, "username": true, "user": true, "login": true,
+	"email": true, "text": true, "submit": true, "button": true, "hidden": true,
+	"checkbox": true, "radio": true, "number": true, "search": true, "tel": true,
+	"url": true, "file": true, "image": true, "reset": true, "range": true,
+	"type": true, "name": true, "value": true, "placeholder": true, "autocomplete": true,
+	"current-password": true, "new-password": true, "one-time-code": true,
+	"password123": true, "secret123": true, "changeme": true, "example": true,
+	"string": true, "object": true, "function": true, "return": true, "const": true,
+	"let": true, "var": true, "this": true, "self": true, "none": true, "empty": true,
+	"default": true, "optional": true, "disabled": true, "enabled": true, "readonly": true,
+	"http": true, "https": true, "www": true, "html": true, "head": true, "body": true,
+}
+
+// isHumanCredFP returns true if a human-cred match should be discarded as false positive.
+
+// normalizeCredValue strips trailing punctuation often glued by bare assignments
+// (e.g. password: required;  → required).
+func normalizeCredValue(s string) string {
+	s = strings.TrimSpace(s)
+	// strip surrounding quotes
+	if len(s) >= 2 {
+		if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
+			s = s[1 : len(s)-1]
+		}
+	}
+	for {
+		if s == "" {
+			break
+		}
+		last := s[len(s)-1]
+		if last == ';' || last == ',' || last == '.' || last == ')' || last == ']' || last == '}' || last == ':' {
+			s = s[:len(s)-1]
+			continue
+		}
+		break
+	}
+	return strings.TrimSpace(s)
+}
+
+func isHumanCredFP(patternName, match, lineText string) bool {
+	m := normalizeCredValue(strings.TrimSpace(match))
+	ml := strings.ToLower(m)
+	ll := strings.ToLower(lineText)
+
+	// Pure UI / form markup without an actual secret value
+	uiLineMarkers := []string{
+		`type="password"`, `type='password'`, `type=password`,
+		`type = "password"`, `type = 'password'`,
+		`autocomplete="current-password"`, `autocomplete='current-password'`,
+		`autocomplete="new-password"`, `autocomplete='new-password'`,
+		`forgot password`, `reset password`, `change password`, `enter your password`,
+		`confirm password`, `repeat password`, `re-enter password`,
+		`password must`, `password should`, `password cannot`, `password is required`,
+		`minlength`, `maxlength`, `aria-label`,
+	}
+	// Early reject: bare assignment value is UI noise after normalize
+	if uiNoiseWords[ml] {
+		return true
+	}
+
+	// For password-assignment patterns, lines that ONLY declare a password field are FP
+	if patternName == "Password assignment (quoted or bare)" ||
+		patternName == "Generic Secret / Password in code" {
+		// type=password with no real assignment value beyond HTML attrs
+		if strings.Contains(ll, "type") && strings.Contains(ll, "password") &&
+			!strings.Contains(ll, "value=") &&
+			(strings.Contains(ll, "<input") || strings.Contains(ll, "<label") ||
+				strings.Contains(ll, "placeholder") || strings.Contains(ll, "autocomplete")) {
+			return true
+		}
+		for _, mk := range uiLineMarkers {
+			if strings.Contains(ll, mk) && len(m) < 20 {
+				// short match on a UI line → almost certainly attribute/label noise
+				if uiNoiseWords[ml] || strings.Contains(ml, "password") {
+					return true
+				}
+			}
+		}
+		if uiNoiseWords[ml] {
+			return true
+		}
+		// password: required / password=true style
+		if ml == "required" || ml == "true" || ml == "false" || ml == "null" {
+			return true
+		}
+		// CSS / selector noise: input[type=password]
+		if strings.Contains(ll, "[type") || strings.Contains(ll, "input[") {
+			return true
+		}
+	}
+
+	// user:pass style matches
+	if strings.Contains(patternName, "user:pass") || strings.Contains(m, ":") {
+		user, pass, ok := splitUserPass(m)
+		if ok {
+			ul, pl := strings.ToLower(user), strings.ToLower(pass)
+			if uiNoiseWords[ul] || uiNoiseWords[pl] {
+				return true
+			}
+			// reject scheme-like user (http, https, ftp, mailto)
+			if ul == "http" || ul == "https" || ul == "ftp" || ul == "mailto" || ul == "ws" || ul == "wss" {
+				return true
+			}
+			// reject if password looks like a URL path fragment or CSS
+			if strings.HasPrefix(pl, "//") || strings.HasPrefix(pass, "/") {
+				return true
+			}
+			// reject time-like or pure short numeric pairs already blocked by user starting with letter
+			// reject if line is clearly CSS property dump without cred context (belt+suspenders)
+			if strings.Contains(ll, "{") && strings.Contains(ll, "}") &&
+				!strings.Contains(ll, "credential") && !strings.Contains(ll, "password") &&
+				!strings.Contains(ll, "todo") && !strings.Contains(ll, "login") {
+				return true
+			}
+		}
+	}
+
+	// Hardcoded input: empty-looking or placeholder values
+	if strings.HasPrefix(patternName, "Hardcoded password input") {
+		if uiNoiseWords[ml] || ml == "" || strings.HasPrefix(ml, "{{") || strings.HasPrefix(ml, "${") {
+			return true
+		}
+	}
+
+	// Username+Password pair: form markup without real values
+	if patternName == "Username + Password pair assignment" {
+		if strings.Contains(ll, "<input") && !strings.Contains(ll, "value=") {
+			return true
+		}
+		// drop if password side is pure UI noise
+		low := strings.ToLower(m)
+		if idx := strings.LastIndex(low, "password"); idx >= 0 {
+			tail := strings.TrimSpace(low[idx+len("password"):])
+			tail = strings.TrimLeft(tail, " \t:=\"'")
+			// first token of password value
+			tok := tail
+			for i, r := range tail {
+				if r == ' ' || r == '"' || r == '\'' || r == '<' || r == ',' || r == ';' {
+					tok = tail[:i]
+					break
+				}
+			}
+			if uiNoiseWords[tok] {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func splitUserPass(s string) (user, pass string, ok bool) {
+	// take first colon only (passwords may contain ':')
+	i := strings.IndexByte(s, ':')
+	if i <= 0 || i >= len(s)-1 {
+		return "", "", false
+	}
+	return s[:i], s[i+1:], true
+}
+
+
 func isPlaceholder(s string) bool {
 	lower := strings.ToLower(s)
 	placeholders := []string{
@@ -700,6 +884,9 @@ func isPlaceholder(s string) bool {
 		"00000000", "test123", "password123", "secret123",
 		"<api", "api_key>", "token>", "{api", "{key", "${",
 		"xxxx", "yyyy", "zzzz", "none", "undefined", "null",
+		"placeholder", "insert_", "insert-", "redacted", "dummy",
+		"sample", "lorem", "asdf", "qwerty", "abc123", "string",
+		"todo", "fixme", "xxx", "yyy", "zzz",
 	}
 	for _, p := range placeholders {
 		if strings.Contains(lower, p) {

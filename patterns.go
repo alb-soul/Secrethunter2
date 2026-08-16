@@ -1846,4 +1846,70 @@ var patterns = []Pattern{
 		Severity:   SevHigh,
 		MatchGroup: 1,
 	},
+
+	// ════════════════════════════════════════════════════════════════════════════
+	// HUMAN / LEFTOVER CREDENTIALS
+	// Catches HTB-style & real-world leaks that prefixed-API patterns miss:
+	//   <!-- TODO: remove test credentials admin:HiddenInPlainSight -->
+	//   // login: admin password: Secret123
+	//   credentials admin:P@ssw0rd
+	// Anti-FP: isHumanCredFP() in main.go (UI labels, type=password, etc.)
+	// ════════════════════════════════════════════════════════════════════════════
+
+	// HTML comment containing context keyword + user:pass
+	// Lab HTB: <!-- TODO: remove test credentials admin:HiddenInPlainSight -->
+	{
+		Name:       "HTML comment credentials (user:pass)",
+		Regex:      regexp.MustCompile(`(?i)<!--[^>]{0,500}?(?:credential|credentials|password|passwd|login|todo|username|user\s*[:=]|pass(?:word)?\s*[:=]|secret|default)[^>]{0,160}?\b([A-Za-z][A-Za-z0-9._%+\-]{1,39}:[^\s"'<>\\]{4,64})\b[^>]*-->`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	// // line comment with context + user:pass
+	{
+		Name:       "JS/line comment credentials (user:pass)",
+		Regex:      regexp.MustCompile(`(?i)//[^\n]{0,400}?(?:credential|credentials|password|passwd|login|todo|username|secret|default)[^\n]{0,120}?\b([A-Za-z][A-Za-z0-9._%+\-]{1,39}:[^\s"'<>\\]{4,64})\b`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	// /* block comment */ with context + user:pass
+	{
+		Name:       "Block comment credentials (user:pass)",
+		Regex:      regexp.MustCompile(`(?i)/\*[\s\S]{0,500}?(?:credential|credentials|password|passwd|login|todo|username|secret|default)[\s\S]{0,120}?\b([A-Za-z][A-Za-z0-9._%+\-]{1,39}:[^\s"'<>\\]{4,64})\b[\s\S]{0,120}?\*/`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	// Freeform near keyword (no comment required): "credentials admin:pass"
+	{
+		Name:       "Freeform credentials near keyword (user:pass)",
+		Regex:      regexp.MustCompile(`(?i)(?:credentials?|default\s+(?:credentials?|password|login|user)|test\s+(?:credentials?|password|account|user|login)|demo\s+(?:credentials?|account|user|login)|login\s*(?:with|as|is|=|:)|user(?:name)?\s*/\s*pass(?:word)?)\s*[:=]?\s*([A-Za-z][A-Za-z0-9._%+\-]{1,39}:[^\s"'<>\\,]{4,64})\b`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	// password/passwd/pwd = value (quoted OR unquoted)
+	{
+		Name:       "Password assignment (quoted or bare)",
+		Regex:      regexp.MustCompile(`(?i)(?:password|passwd|pwd|passphrase)\s*[=:]\s*['"]?([^\s"'<>\\,]{6,80})['"]?`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+	// username=X ... password=Y
+	{
+		Name:     "Username + Password pair assignment",
+		Regex:    regexp.MustCompile(`(?i)(?:user(?:name)?|login|uid)\s*[=:]\s*['"]?([A-Za-z0-9._\-@+]{2,40})['"]?\s*[,;\s|&]{1,12}\s*(?:password|passwd|pwd)\s*[=:]\s*['"]?([^\s"'<>\\,]{4,64})['"]?`),
+		Severity: SevHigh,
+	},
+	// <input type=password value="secret">
+	{
+		Name:       "Hardcoded password input value",
+		Regex:      regexp.MustCompile(`(?i)<input\b[^>]{0,300}?\btype\s*=\s*['"]?password['"]?[^>]{0,300}?\bvalue\s*=\s*['"]([^'"]{4,80})['"]`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Hardcoded password input value (value before type)",
+		Regex:      regexp.MustCompile(`(?i)<input\b[^>]{0,300}?\bvalue\s*=\s*['"]([^'"]{4,80})['"][^>]{0,300}?\btype\s*=\s*['"]?password['"]?`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+
 }
