@@ -39,7 +39,7 @@ import (
 )
 
 const (
-	version   = "2.1.0"
+	version   = "2.1.1"
 	defaultUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 	maxBodyMB = 10
 	banner    = `
@@ -699,20 +699,22 @@ func mergeCandidates(rawURL, content string, groups [][]patternCandidate) []Find
 }
 
 
-// humanCredPattern marks pattern names that need extra anti-FP line checks.
+
+// humanCredPatterns marks pattern names that need extra anti-FP checks.
 var humanCredPatterns = map[string]bool{
 	"HTML comment credentials (user:pass)":              true,
 	"JS/line comment credentials (user:pass)":            true,
 	"Block comment credentials (user:pass)":              true,
 	"Freeform credentials near keyword (user:pass)":      true,
 	"Password assignment (quoted or bare)":               true,
+	"Password assignment bare (env/config)":              true,
 	"Username + Password pair assignment":                true,
 	"Hardcoded password input value":                     true,
 	"Hardcoded password input value (value before type)": true,
 	"Generic Secret / Password in code":                  true,
 }
 
-// uiNoiseWords: values that look like secrets but are HTML/JS/UI noise.
+// uiNoiseWords: values that look like secrets but are HTML/JS/UI/CSS noise.
 var uiNoiseWords = map[string]bool{
 	"required": true, "true": true, "false": true, "null": true, "undefined": true,
 	"password": true, "passwd": true, "username": true, "user": true, "login": true,
@@ -726,15 +728,71 @@ var uiNoiseWords = map[string]bool{
 	"let": true, "var": true, "this": true, "self": true, "none": true, "empty": true,
 	"default": true, "optional": true, "disabled": true, "enabled": true, "readonly": true,
 	"http": true, "https": true, "www": true, "html": true, "head": true, "body": true,
+	"void": true, "fill": true, "stroke": true, "width": true, "height": true,
+	"color": true, "class": true, "classname": true, "style": true, "props": true,
+	"state": true, "children": true, "component": true, "export": true,
+	"import": true, "from": true, "async": true, "await": true, "promise": true,
+	"error": true, "success": true, "loading": true, "pending": true, "data": true,
+	"item": true, "index": true, "length": true, "array": true,
+	"boolean": true, "symbol": true, "bigint": true,
+	"left": true, "right": true, "top": true, "bottom": true, "center": true,
+	"start": true, "end": true, "middle": true, "auto": true, "inherit": true,
+	"initial": true, "unset": true, "solid": true, "dashed": true, "dotted": true,
+	"absolute": true, "relative": true, "fixed": true, "sticky": true, "static": true,
+	"block": true, "inline": true, "flex": true, "grid": true,
+	"row": true, "column": true, "wrap": true, "nowrap": true,
+	"pointer": true, "cursor": true, "hover": true, "focus": true, "active": true,
+	"visible": true, "collapse": true, "scroll": true,
+	"px": true, "em": true, "rem": true, "vh": true, "vw": true,
+	"src": true, "href": true, "alt": true, "title": true, "role": true,
+	"key": true, "ref": true, "id": true, "target": true, "rel": true,
+	"method": true, "action": true, "enctype": true, "novalidate": true,
+	"selected": true, "checked": true, "multiple": true, "pattern": true,
+	"min": true, "max": true, "step": true, "rows": true, "cols": true,
+	"transport": true, "template": true, "variant": true, "status": true,
+	"timezone": true, "locale": true, "theme": true, "mode": true, "view": true,
+	"roomjid": true, "room": true, "jid": true, "peer": true, "socket": true,
+	"strokewidth": true, "background": true, "border": true, "margin": true,
+	"padding": true, "display": true, "position": true, "opacity": true,
+	"transform": true, "transition": true, "animation": true, "filter": true,
+	"overflow": true, "zindex": true, "z-index": true, "fontsize": true,
+	"fontweight": true, "lineheight": true, "textalign": true,
+	"onclick": true, "onchange": true, "onsubmit": true, "onload": true,
+	"errorcode": true,
 }
 
-// isHumanCredFP returns true if a human-cred match should be discarded as false positive.
+// jsPropNoise: common minified / CSS / framework names used as fake "user" side
+var jsPropNoise = map[string]bool{
+	"src": true, "href": true, "type": true, "name": true, "value": true, "id": true,
+	"key": true, "ref": true, "to": true, "from": true, "as": true, "of": true,
+	"status": true, "state": true, "props": true, "style": true, "class": true,
+	"classname": true, "children": true, "variant": true, "template": true,
+	"transport": true, "timezone": true, "strokewidth": true, "errorcode": true,
+	"background-color": true, "background": true, "border-color": true,
+	"color": true, "fill": true, "stroke": true, "width": true, "height": true,
+	"margin": true, "padding": true, "display": true, "position": true,
+	"opacity": true, "cursor": true, "overflow": true, "z-index": true,
+	"font-size": true, "font-weight": true, "line-height": true, "text-align": true,
+	"error": true, "code": true, "message": true, "data": true, "method": true,
+	"action": true, "target": true, "content": true, "title": true, "label": true,
+	"sheet": true, "headers": true, "body": true, "query": true, "params": true,
+	"config": true, "options": true, "context": true, "result": true, "response": true,
+	"request": true, "callback": true, "handler": true, "event": true, "element": true,
+	"index": true, "length": true, "count": true, "total": true, "size": true,
+	"model": true, "view": true, "module": true, "exports": true, "require": true,
+	"function": true, "return": true, "const": true, "async": true, "await": true,
+	"selected": true, "active": true, "disabled": true, "visible": true,
+	"success": true, "pending": true, "loading": true, "empty": true, "ready": true,
+	"string": true, "number": true, "boolean": true, "object": true, "array": true,
+	"promise": true, "path": true, "host": true, "port": true, "url": true,
+	"window": true, "document": true, "console": true, "default": true,
+	"roomjid": true, "room": true, "jid": true, "peer": true, "socket": true,
+	"selectedsections": true, "onselectedsectionschange": true, "triggerloader": true,
+}
 
-// normalizeCredValue strips trailing punctuation often glued by bare assignments
-// (e.g. password: required;  → required).
+// normalizeCredValue strips trailing punctuation often glued by bare assignments.
 func normalizeCredValue(s string) string {
 	s = strings.TrimSpace(s)
-	// strip surrounding quotes
 	if len(s) >= 2 {
 		if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
 			s = s[1 : len(s)-1]
@@ -754,120 +812,7 @@ func normalizeCredValue(s string) string {
 	return strings.TrimSpace(s)
 }
 
-func isHumanCredFP(patternName, match, lineText string) bool {
-	m := normalizeCredValue(strings.TrimSpace(match))
-	ml := strings.ToLower(m)
-	ll := strings.ToLower(lineText)
-
-	// Pure UI / form markup without an actual secret value
-	uiLineMarkers := []string{
-		`type="password"`, `type='password'`, `type=password`,
-		`type = "password"`, `type = 'password'`,
-		`autocomplete="current-password"`, `autocomplete='current-password'`,
-		`autocomplete="new-password"`, `autocomplete='new-password'`,
-		`forgot password`, `reset password`, `change password`, `enter your password`,
-		`confirm password`, `repeat password`, `re-enter password`,
-		`password must`, `password should`, `password cannot`, `password is required`,
-		`minlength`, `maxlength`, `aria-label`,
-	}
-	// Early reject: bare assignment value is UI noise after normalize
-	if uiNoiseWords[ml] {
-		return true
-	}
-
-	// For password-assignment patterns, lines that ONLY declare a password field are FP
-	if patternName == "Password assignment (quoted or bare)" ||
-		patternName == "Generic Secret / Password in code" {
-		// type=password with no real assignment value beyond HTML attrs
-		if strings.Contains(ll, "type") && strings.Contains(ll, "password") &&
-			!strings.Contains(ll, "value=") &&
-			(strings.Contains(ll, "<input") || strings.Contains(ll, "<label") ||
-				strings.Contains(ll, "placeholder") || strings.Contains(ll, "autocomplete")) {
-			return true
-		}
-		for _, mk := range uiLineMarkers {
-			if strings.Contains(ll, mk) && len(m) < 20 {
-				// short match on a UI line → almost certainly attribute/label noise
-				if uiNoiseWords[ml] || strings.Contains(ml, "password") {
-					return true
-				}
-			}
-		}
-		if uiNoiseWords[ml] {
-			return true
-		}
-		// password: required / password=true style
-		if ml == "required" || ml == "true" || ml == "false" || ml == "null" {
-			return true
-		}
-		// CSS / selector noise: input[type=password]
-		if strings.Contains(ll, "[type") || strings.Contains(ll, "input[") {
-			return true
-		}
-	}
-
-	// user:pass style matches
-	if strings.Contains(patternName, "user:pass") || strings.Contains(m, ":") {
-		user, pass, ok := splitUserPass(m)
-		if ok {
-			ul, pl := strings.ToLower(user), strings.ToLower(pass)
-			if uiNoiseWords[ul] || uiNoiseWords[pl] {
-				return true
-			}
-			// reject scheme-like user (http, https, ftp, mailto)
-			if ul == "http" || ul == "https" || ul == "ftp" || ul == "mailto" || ul == "ws" || ul == "wss" {
-				return true
-			}
-			// reject if password looks like a URL path fragment or CSS
-			if strings.HasPrefix(pl, "//") || strings.HasPrefix(pass, "/") {
-				return true
-			}
-			// reject time-like or pure short numeric pairs already blocked by user starting with letter
-			// reject if line is clearly CSS property dump without cred context (belt+suspenders)
-			if strings.Contains(ll, "{") && strings.Contains(ll, "}") &&
-				!strings.Contains(ll, "credential") && !strings.Contains(ll, "password") &&
-				!strings.Contains(ll, "todo") && !strings.Contains(ll, "login") {
-				return true
-			}
-		}
-	}
-
-	// Hardcoded input: empty-looking or placeholder values
-	if strings.HasPrefix(patternName, "Hardcoded password input") {
-		if uiNoiseWords[ml] || ml == "" || strings.HasPrefix(ml, "{{") || strings.HasPrefix(ml, "${") {
-			return true
-		}
-	}
-
-	// Username+Password pair: form markup without real values
-	if patternName == "Username + Password pair assignment" {
-		if strings.Contains(ll, "<input") && !strings.Contains(ll, "value=") {
-			return true
-		}
-		// drop if password side is pure UI noise
-		low := strings.ToLower(m)
-		if idx := strings.LastIndex(low, "password"); idx >= 0 {
-			tail := strings.TrimSpace(low[idx+len("password"):])
-			tail = strings.TrimLeft(tail, " \t:=\"'")
-			// first token of password value
-			tok := tail
-			for i, r := range tail {
-				if r == ' ' || r == '"' || r == '\'' || r == '<' || r == ',' || r == ';' {
-					tok = tail[:i]
-					break
-				}
-			}
-			if uiNoiseWords[tok] {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
 func splitUserPass(s string) (user, pass string, ok bool) {
-	// take first colon only (passwords may contain ':')
 	i := strings.IndexByte(s, ':')
 	if i <= 0 || i >= len(s)-1 {
 		return "", "", false
@@ -875,6 +820,227 @@ func splitUserPass(s string) (user, pass string, ok bool) {
 	return s[:i], s[i+1:], true
 }
 
+// looksLikeMinifiedJS: long dense line typical of webpack/min bundles.
+func looksLikeMinifiedJS(line string) bool {
+	if len(line) < 200 {
+		return false
+	}
+	// density of JS punctuation
+	n := 0
+	for _, r := range line {
+		switch r {
+		case '{', '}', '(', ')', ';', ',', '=', ':':
+			n++
+		}
+	}
+	return n > 30 && (n*100)/len(line) > 8
+}
+
+// looksLikeSecretValue: password side should not be plain JS identifier / CSS.
+func looksLikeSecretValue(pass string) bool {
+	if len(pass) < 6 {
+		return false
+	}
+	pl := strings.ToLower(pass)
+	if uiNoiseWords[pl] || jsPropNoise[pl] {
+		return false
+	}
+	// reject JS member chains / calls
+	if strings.Contains(pass, "this.") || strings.Contains(pass, "function") ||
+		strings.ContainsAny(pass, "(){}[]<>") || strings.Contains(pass, "=>") {
+		return false
+	}
+	// CSS color
+	if strings.HasPrefix(pass, "#") {
+		return false
+	}
+	// pure single-case short identifier without digit/special → likely JS prop value
+	hasDigit := false
+	hasSpecial := false
+	hasUpper := false
+	hasLower := false
+	for _, r := range pass {
+		switch {
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		case r >= 'A' && r <= 'Z':
+			hasUpper = true
+		case r >= 'a' && r <= 'z':
+			hasLower = true
+		case r == '_' || r == '-' || r == '.' || r == '+' || r == '/' || r == '=' ||
+			r == '!' || r == '@' || r == '#' || r == '$' || r == '%' || r == '^' ||
+			r == '&' || r == '*':
+			hasSpecial = true
+		}
+	}
+	// Accept if: has digit, OR special, OR mixed case (HiddenInPlainSight), OR long enough
+	if hasDigit || hasSpecial {
+		return true
+	}
+	if hasUpper && hasLower && len(pass) >= 8 {
+		return true // CamelCase secrets like HiddenInPlainSight
+	}
+	// all-lower or all-upper without digit/special — weak, reject unless long random-looking
+	if len(pass) >= 16 {
+		return true
+	}
+	return false
+}
+
+// isHumanCredFP returns true if a human-cred match should be discarded.
+func isHumanCredFP(patternName, match, lineText string) bool {
+	m := normalizeCredValue(strings.TrimSpace(match))
+	ml := strings.ToLower(m)
+	ll := strings.ToLower(lineText)
+
+	if m == "" || uiNoiseWords[ml] {
+		return true
+	}
+	// never keep JS/CSS plumbing
+	if strings.Contains(m, "this.") || strings.ContainsAny(m, "(){}[]") ||
+		strings.Contains(m, "=>") || strings.Contains(m, "function") {
+		return true
+	}
+
+	// Minified bundles: human leftover creds almost never live on 10KB one-liners
+	// without being real comments — still allow HTML comments (multi-line safe).
+	if looksLikeMinifiedJS(lineText) {
+		switch patternName {
+		case "JS/line comment credentials (user:pass)",
+			"Block comment credentials (user:pass)",
+			"Freeform credentials near keyword (user:pass)",
+			"Password assignment (quoted or bare)",
+			"Password assignment bare (env/config)",
+			"Username + Password pair assignment":
+			return true
+		}
+	}
+
+	// user:pass family
+	if strings.Contains(patternName, "user:pass") || strings.Count(m, ":") == 1 {
+		user, pass, ok := splitUserPass(m)
+		if ok {
+			ul, pl := strings.ToLower(user), strings.ToLower(pass)
+			if uiNoiseWords[ul] || uiNoiseWords[pl] || jsPropNoise[ul] || jsPropNoise[pl] {
+				return true
+			}
+			// CSS property names (background-color, font-size, …)
+			if strings.Contains(user, "-") {
+				return true
+			}
+			// scheme-like
+			if ul == "http" || ul == "https" || ul == "ftp" || ul == "mailto" || ul == "ws" || ul == "wss" || ul == "file" {
+				return true
+			}
+			// path / color
+			if strings.HasPrefix(pass, "/") || strings.HasPrefix(pass, "#") || strings.HasPrefix(pl, "//") {
+				return true
+			}
+			// single-letter / tiny minified values (src:i, type:n)
+			if len(pass) <= 3 {
+				return true
+			}
+			// pure numeric password
+			allNum := true
+			for _, r := range pass {
+				if r < '0' || r > '9' {
+					allNum = false
+					break
+				}
+			}
+			if allNum {
+				return true
+			}
+			if !looksLikeSecretValue(pass) {
+				return true
+			}
+			// camelCase JS prop as user (onSelectedSectionsChange, strokeWidth)
+			if len(user) > 2 {
+				hasLower, hasUpper := false, false
+				for _, r := range user {
+					if r >= 'a' && r <= 'z' {
+						hasLower = true
+					}
+					if r >= 'A' && r <= 'Z' {
+						hasUpper = true
+					}
+				}
+				// camelCase user + short/simple pass → FP
+				if hasLower && hasUpper && !looksLikeSecretValue(pass) {
+					return true
+				}
+				// long camelCase identifier as username is almost never a login user
+				if hasLower && hasUpper && len(user) > 12 {
+					return true
+				}
+			}
+		}
+	}
+
+	// Password assignment patterns
+	if patternName == "Password assignment (quoted or bare)" ||
+		patternName == "Password assignment bare (env/config)" ||
+		patternName == "Generic Secret / Password in code" {
+		if !looksLikeSecretValue(m) && !strings.ContainsAny(m, "0123456789!@#$%^&*") {
+			// allow mixed-case long secrets without digit
+			if !(len(m) >= 8 && hasMixedCase(m)) {
+				return true
+			}
+		}
+		if strings.HasPrefix(ml, "this.") || strings.Contains(ml, "function") {
+			return true
+		}
+		// UI form lines
+		if strings.Contains(ll, "type") && strings.Contains(ll, "password") &&
+			!strings.Contains(ll, "value=") &&
+			(strings.Contains(ll, "<input") || strings.Contains(ll, "<label") ||
+				strings.Contains(ll, "placeholder") || strings.Contains(ll, "autocomplete")) {
+			return true
+		}
+		if strings.Contains(ll, "[type") || strings.Contains(ll, "input[") {
+			return true
+		}
+		uiLineMarkers := []string{
+			"forgot password", "reset password", "change password", "enter your password",
+			"confirm password", "password must", "password should", "password is required",
+		}
+		for _, mk := range uiLineMarkers {
+			if strings.Contains(ll, mk) {
+				return true
+			}
+		}
+	}
+
+	if strings.HasPrefix(patternName, "Hardcoded password input") {
+		if uiNoiseWords[ml] || strings.HasPrefix(ml, "{{") || strings.HasPrefix(ml, "${") {
+			return true
+		}
+		if !looksLikeSecretValue(m) && len(m) < 8 {
+			return true
+		}
+	}
+
+	if patternName == "Username + Password pair assignment" {
+		if strings.Contains(ll, "<input") && !strings.Contains(ll, "value=") {
+			return true
+		}
+	}
+
+	return false
+}
+
+func hasMixedCase(s string) bool {
+	var lower, upper bool
+	for _, r := range s {
+		if r >= 'a' && r <= 'z' {
+			lower = true
+		}
+		if r >= 'A' && r <= 'Z' {
+			upper = true
+		}
+	}
+	return lower && upper
+}
 
 func isPlaceholder(s string) bool {
 	lower := strings.ToLower(s)
