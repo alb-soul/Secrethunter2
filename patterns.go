@@ -1715,34 +1715,6 @@ var patterns = []Pattern{
 		MatchGroup: 1,
 	},
 
-	// ─── Generic Sensitive Patterns ───────────────────────────────────────────────
-	// Restrict value to non-space chars only — prevents matching UI strings like
-	// "Forgot password?", "Enter your password", "Reset your password", etc.
-	{
-		Name:       "Generic Secret / Password in code",
-		Regex:      regexp.MustCompile(`(?i)(?:password|passwd|secret|private[_\-]?key|client[_\-]?secret|auth[_\-]?token|access[_\-]?token)["\']?\s*[=:]\s*['"]([A-Za-z0-9!@#$%^&*_\-.+][A-Za-z0-9!@#$%^&*_\-./+]{7,79})['"]`),
-		Severity:   SevLow,
-		MatchGroup: 1,
-	},
-	// Restrict value to alphanumeric+dash/underscore — prevents matching placeholders
-	// like "your-key-here", "your-venice-api-key", UI labels, etc.
-	{
-		Name:       "Generic API Key in code",
-		Regex:      regexp.MustCompile(`(?i)(?:api[_\-]?key|apikey|app[_\-]?key|appkey)["\']?\s*[=:]\s*['"]([A-Za-z0-9_\-]{10,80})['"]`),
-		Severity:   SevLow,
-		MatchGroup: 1,
-	},
-	{
-		Name:       "Bearer Token in code",
-		Regex:      regexp.MustCompile(`(?i)(?:bearer|authorization)["\']?\s*[=:]\s*['"]?Bearer\s+([A-Za-z0-9_\-\.]{20,})['"]?`),
-		Severity:   SevMedium,
-		MatchGroup: 1,
-	},
-	{
-		Name:     "GCP Service Account Email",
-		Regex:    regexp.MustCompile(`\b[a-z][a-z0-9\-]{4,28}@[a-z][a-z0-9\-]{4,28}\.iam\.gserviceaccount\.com\b`),
-		Severity: SevMedium,
-	},
 
 	// ════════════════════════════════════════════════════════════════════════════
 	// NEW SERVICES — BATCH 4 (verified against official docs, 2026)
@@ -1915,6 +1887,281 @@ var patterns = []Pattern{
 		Regex:      regexp.MustCompile(`(?i)<input\b[^>]{0,200}?\bvalue\s*=\s*["']([^"']{4,64})["'][^>]{0,200}?\btype\s*=\s*["']?password["']?`),
 		Severity:   SevHigh,
 		MatchGroup: 1,
+	},
+
+	// ════════════════════════════════════════════════════════════════════════════
+	// NEW SERVICES BATCH 5 — verified formats (2026): AI agents, payments,
+	// observability, web3, maps/weather, misc SaaS
+	// ════════════════════════════════════════════════════════════════════════════
+
+	// ─── AI agents / search / scraping ────────────────────────────────────────
+	{
+		Name:     "Tavily API Key (tvly-)",
+		Regex:    regexp.MustCompile(`\btvly-(?:dev-|prod-)?[A-Za-z0-9_\-]{16,}\b`),
+		Severity: SevMedium,
+	},
+	{
+		Name:     "Firecrawl API Key (fc-)",
+		Regex:    regexp.MustCompile(`\bfc[-_][A-Za-z0-9]{16,}\b`),
+		Severity: SevMedium,
+	},
+	{
+		Name:     "LlamaCloud / LlamaIndex Key (llx-)",
+		Regex:    regexp.MustCompile(`\bllx-[A-Za-z0-9_\-]{16,}\b`),
+		Severity: SevHigh,
+	},
+	{
+		Name:       "Serper.dev API Key (context)",
+		Regex:      regexp.MustCompile(`(?i)serper[^"\n]{0,40}?(?:api[_\-\s]*)?key["\']?\s*[:=]\s*["']([a-f0-9]{32})["']`),
+		Severity:   SevLow,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Exa AI API Key (context)",
+		Regex:      regexp.MustCompile(`(?i)\bexa[_\-\s]*(?:api[_\-\s]*)?key["\']?\s*[:=]\s*["']([A-Za-z0-9_\-]{32,64})["']`),
+		Severity:   SevLow,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "SerpAPI Key (context)",
+		Regex:      regexp.MustCompile(`(?i)serpapi[^"\n]{0,40}?(?:api[_\-\s]*)?key["\']?\s*[:=]\s*["']([a-f0-9]{32,64})["']`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+
+	// ─── Auth / SaaS ──────────────────────────────────────────────────────────
+	{
+		Name:     "WorkOS Secret Key (sk_test/sk_prod/sk_live)",
+		Regex:    regexp.MustCompile(`\bsk_(?:test|prod|live|example)_[A-Za-z0-9]{16,}\b`),
+		Severity: SevHigh,
+	},
+	{
+		Name:     "Cal.com API Key (cal_live/cal_test)",
+		Regex:    regexp.MustCompile(`\bcal_(?:live|test)_[A-Za-z0-9_\-]{20,}\b`),
+		Severity: SevHigh,
+	},
+
+	// ─── Observability / logs ─────────────────────────────────────────────────
+	{
+		Name:     "Grafana Cloud Access Policy Token (glc_)",
+		Regex:    regexp.MustCompile(`\bglc_[A-Za-z0-9+/=_\-\.]{20,}\b`),
+		Severity: SevHigh,
+	},
+	{
+		Name:     "Axiom.co Dataset Token (xaat-)",
+		Regex:    regexp.MustCompile(`\bxaat-[A-Za-z0-9_\-]{16,}\b`),
+		Severity: SevMedium,
+	},
+	{
+		Name:       "Splunk HEC Token (context)",
+		Regex:      regexp.MustCompile(`(?i)\b(?:splunk[_\-\s]*(?:hec[_\-\s]*)?(?:token|key)|hec[_\-\s]*token)["\']?\s*[:=]\s*["']?([a-f0-9]{32,64})["']?`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+
+	// ─── Payments ─────────────────────────────────────────────────────────────
+	{
+		Name:     "Adyen API Key (AQE…)",
+		Regex:    regexp.MustCompile(`\bAQE[A-Za-z0-9+/=_\-]{60,140}\b`),
+		Severity: SevCritical,
+	},
+
+	// ─── Infra / hosting ──────────────────────────────────────────────────────
+	{
+		Name:       "Heroku API Key (UUID, context)",
+		Regex:      regexp.MustCompile(`(?i)heroku[^"\n]{0,40}?(?:api[_\-\s]*)?(?:key|token)["\']?\s*[:=]\s*["']?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})["']?`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+	{
+		Name:     "Netlify Personal Access Token (nfp_)",
+		Regex:    regexp.MustCompile(`\bnfp_[A-Za-z0-9_\-]{36,}\b`),
+		Severity: SevHigh,
+	},
+	{
+		Name:     "Oracle Cloud ID (ocid1)",
+		Regex:    regexp.MustCompile(`\bocid1\.[a-z]+\.(?:oc1|oc2|oc3|eu-frankfurt-1)\.\.[a-z0-9]+(\.[a-z2-7]+)*\b`),
+		Severity: SevLow,
+	},
+
+	// ─── GitLab extra token types ─────────────────────────────────────────────
+	{
+		Name:     "GitLab OAuth App Secret (gloas-)",
+		Regex:    regexp.MustCompile(`\bgloas-[A-Za-z0-9_\-]{20,}\b`),
+		Severity: SevHigh,
+	},
+	{
+		Name:     "GitLab Pipeline Trigger Token (glptt-)",
+		Regex:    regexp.MustCompile(`\bglptt-[A-Za-z0-9_\-]{20,}\b`),
+		Severity: SevMedium,
+	},
+	{
+		Name:     "GitLab Feed Token (glfeed-)",
+		Regex:    regexp.MustCompile(`\bglfeed-[A-Za-z0-9_\-]{20,}\b`),
+		Severity: SevLow,
+	},
+
+	// ─── Web3 ─────────────────────────────────────────────────────────────────
+	{
+		Name:       "Etherscan-family Explorer Key (context)",
+		Regex:      regexp.MustCompile(`(?i)\b(?:etherscan|bscscan|polygonscan|arbiscan|basescan|snowtrace|optimistic[\.\-]?etherscan)[_\-]?[^"\n]{0,60}?(?:apikey|api[_\-\s]*key|token)["\']?\s*[:=]?\s*["']?\b([A-Za-z0-9]{32,40})\b`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Infura Project Key (context)",
+		Regex:      regexp.MustCompile(`(?i)infura[^"\n]{0,40}?(?:project[_\-\s]*)?(?:id|secret|key)["\']?\s*[:=]\s*["']?([a-f0-9]{32})["']?`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Moralis Web3 API Key (context)",
+		Regex:      regexp.MustCompile(`(?i)moralis[^"\n]{0,60}?["']([A-Za-z0-9+/=_\-]{80,})["']`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Alchemy API Key (context)",
+		Regex:      regexp.MustCompile(`(?i)alchemy[^"\n]{0,60}?(?:api[_\-\s]*)?(?:key|token)["\']?\s*[:=]\s*["']([A-Za-z0-9_\-]{25,60})["']`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+
+	// ─── Maps / weather / news (frontend favorites) ───────────────────────────
+	{
+		Name:       "OpenWeatherMap appid",
+		Regex:      regexp.MustCompile(`(?i)\bappid["']?\s*[:=]\s*["']?([a-f0-9]{32})["']?`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "DeepL API Key (free :fx)",
+		Regex:      regexp.MustCompile(`\b[0-9a-f]{32}:fx\b`),
+		Severity:   SevHigh,
+	},
+	{
+		Name:       "DeepL API Key (context)",
+		Regex:      regexp.MustCompile(`(?i)deepl[^"\n]{0,40}?["']([0-9a-f]{32})(?::fx)?["']`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "NewsAPI Key (context)",
+		Regex:      regexp.MustCompile(`(?i)newsapi[^"\n]{0,40}?(?:key|token)?["'\s]*[:=]\s*["']([a-f0-9]{32})["']`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "OpenCage Geocoder Key (context)",
+		Regex:      regexp.MustCompile(`(?i)opencage[^"\n]{0,40}?(?:key|apikey)["\']?\s*[:=]\s*["']([a-f0-9]{32})["']`),
+		Severity:   SevLow,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "HERE Maps API Key (context)",
+		Regex:      regexp.MustCompile(`(?i)\bhere[._\-\s]*(?:maps[._\-\s]*)?(?:api[._\-\s]*)?(?:key|id|secret)["\']?\s*[:=]\s*["']([A-Za-z0-9_\-]{20,64})["']`),
+		Severity:   SevLow,
+		MatchGroup: 1,
+	},
+
+	// ─── Misc SaaS ────────────────────────────────────────────────────────────
+	{
+		Name:     "Apify API Token (apify_api_)",
+		Regex:    regexp.MustCompile(`\bapify_api_[A-Za-z0-9]{20,}\b`),
+		Severity: SevMedium,
+	},
+	{
+		Name:     "n8n Personal API Key (n8n_api_)",
+		Regex:    regexp.MustCompile(`\bn8n_api_[A-Za-z0-9]{20,}\b`),
+		Severity: SevHigh,
+	},
+	{
+		Name:     "Zoho OAuth Token (1000.xxx)",
+		Regex:    regexp.MustCompile(`\b1000\.[0-9a-f]{38,44}\b`),
+		Severity: SevMedium,
+	},
+	{
+		Name:       "Typesense API Key (context)",
+		Regex:      regexp.MustCompile(`(?i)typesense[^"\n]{0,60}?(?:api[_\-\s]*)?key["\']?\s*[:=]\s*["']([A-Za-z0-9]{20,})["']`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Weights & Biases API Key (context)",
+		Regex:      regexp.MustCompile(`(?i)wandb[^"\n]{0,40}?(?:api[_\-\s]*)?key["\']?\s*[:=]\s*["']?([a-f0-9]{40})["']?`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "MessageBird Access Key (live_/test_, context)",
+		Regex:      regexp.MustCompile(`(?i)messagebird[^"\n]{0,60}?(?:access[_\-\s]*)?key["\']?\s*[:=]\s*["']?((?:live|test)_[A-Za-z0-9]{20,30})["']?`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Braze REST API Key (context)",
+		Regex:      regexp.MustCompile(`(?i)braze[^"\n]{0,60}?(?:rest|api)[_\-\s]*(?:key|token)["\']?\s*[:=]\s*["']([A-Za-z0-9\-]{30,50})["']`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Statsig Server Secret (context)",
+		Regex:      regexp.MustCompile(`(?i)statsig[^"\n]{0,60}?["'](secret-[A-Za-z0-9\-]{20,})["']`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Pipedrive API Token (context)",
+		Regex:      regexp.MustCompile(`(?i)pipedrive[^"\n]{0,40}?(?:api[_\-\s]*token|api[_\-\s]*key|token)["\']?\s*[:=]\s*["']?([a-f0-9]{40})["']?`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Jotform API Key (context)",
+		Regex:      regexp.MustCompile(`(?i)jotform[^"\n]{0,40}?(?:api[_\-\s]*)?key["\']?\s*[:=]\s*["']([a-f0-9]{32})["']`),
+		Severity:   SevLow,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Kaggle Credential (username+key json)",
+		Regex:      regexp.MustCompile(`(?i)\{"username"[^}]{0,80}?"key"\s*:\s*"([a-f0-9]{32})"\}`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Pushover Key (context)",
+		Regex:      regexp.MustCompile(`(?i)pushover[^"\n]{0,60}?(?:user|application|app)?[_\-\s]?(?:key|token)["\']?\s*[:=]\s*["']?([A-Za-z0-9]{30})["']?`),
+		Severity:   SevLow,
+		MatchGroup: 1,
+	},
+
+	// ─── Generic Sensitive Patterns ───────────────────────────────────────────────
+	// Restrict value to non-space chars only — prevents matching UI strings like
+	// "Forgot password?", "Enter your password", "Reset your password", etc.
+	{
+		Name:       "Generic Secret / Password in code",
+		Regex:      regexp.MustCompile(`(?i)(?:password|passwd|secret|private[_\-]?key|client[_\-]?secret|auth[_\-]?token|access[_\-]?token)["\']?\s*[=:]\s*['"]([A-Za-z0-9!@#$%^&*_\-.+][A-Za-z0-9!@#$%^&*_\-./+]{7,79})['"]`),
+		Severity:   SevLow,
+		MatchGroup: 1,
+	},
+	// Restrict value to alphanumeric+dash/underscore — prevents matching placeholders
+	// like "your-key-here", "your-venice-api-key", UI labels, etc.
+	{
+		Name:       "Generic API Key in code",
+		Regex:      regexp.MustCompile(`(?i)(?:api[_\-]?key|apikey|app[_\-]?key|appkey)["\']?\s*[=:]\s*['"]([A-Za-z0-9_\-]{10,80})['"]`),
+		Severity:   SevLow,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Bearer Token in code",
+		Regex:      regexp.MustCompile(`(?i)(?:bearer|authorization)["\']?\s*[=:]\s*['"]?Bearer\s+([A-Za-z0-9_\-\.]{20,})['"]?`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+	{
+		Name:     "GCP Service Account Email",
+		Regex:    regexp.MustCompile(`\b[a-z][a-z0-9\-]{4,28}@[a-z][a-z0-9\-]{4,28}\.iam\.gserviceaccount\.com\b`),
+		Severity: SevMedium,
 	},
 
 }
