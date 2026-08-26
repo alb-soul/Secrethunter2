@@ -541,7 +541,15 @@ var patterns = []Pattern{
 	{
 		Name:       "Amplitude API Key",
 		Regex:      regexp.MustCompile(`(?i)amplitude[_\-\s]*(?:api[_\-\s]*)?key["\']?\s*[=:]\s*['"]?([a-f0-9]{32})['"]?`),
-		Severity:   SevMedium,
+		Severity:   SevLow,
+		MatchGroup: 1,
+	},
+	// Secret Key untuk Dashboard REST / Export / User Privacy API
+	// (basic auth api_key:secret_key) — INI yang sensitif, bukan API Key ingest.
+	{
+		Name:       "Amplitude Secret Key (Export/REST, context)",
+		Regex:      regexp.MustCompile(`(?i)amplitude[^"\n]{0,60}?(?:secret|export)[_\-\s]*(?:api[_\-\s]*)?(?:key|token)["\']?\s*[:=]\s*['"]?([A-Za-z0-9+/=_-]{24,64})["']?`),
+		Severity:   SevHigh,
 		MatchGroup: 1,
 	},
 	{

@@ -39,7 +39,7 @@ import (
 )
 
 const (
-	version   = "2.2.0"
+	version   = "2.2.1"
 	defaultUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 	maxBodyMB = 10
 	banner    = `
@@ -471,6 +471,7 @@ var publicByDesign = map[string]bool{
 	"Supabase Publishable Key (sb_publishable_)": true,
 	"PostHog Project API Key (phc_)":             true,
 	"Segment Write Key (context)":                true,
+	"Amplitude API Key":                          true,
 	"Firebase API Key / Config":                  true,
 	"Cloudflare Turnstile Site Key (0x4AAAA)":    true,
 }
