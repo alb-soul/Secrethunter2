@@ -39,7 +39,7 @@ import (
 )
 
 const (
-	version   = "2.3.0"
+	version   = "2.3.1"
 	defaultUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 	maxBodyMB = 10
 	banner    = `
@@ -713,6 +713,7 @@ var humanCredPatterns = map[string]bool{
 	"Hardcoded password input value":                     true,
 	"Hardcoded password input value (value before type)": true,
 	"Generic Secret / Password in code":                  true,
+	"Bare high-entropy credentials (user:pass)":         true,
 }
 
 // uiNoiseWords: values that look like secrets but are HTML/JS/UI/CSS noise.
@@ -923,10 +924,6 @@ func isHumanCredFP(patternName, match, lineText string) bool {
 		if ok {
 			ul, pl := strings.ToLower(user), strings.ToLower(pass)
 			if uiNoiseWords[ul] || uiNoiseWords[pl] || jsPropNoise[ul] || jsPropNoise[pl] {
-				return true
-			}
-			// CSS property names (background-color, font-size, …)
-			if strings.Contains(user, "-") {
 				return true
 			}
 			// scheme-like

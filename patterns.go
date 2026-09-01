@@ -2281,6 +2281,16 @@ var patterns = []Pattern{
 		Severity:   SevLow,
 	},
 
+
+	// Bare user:pass — telanjang tanpa keyword, tapi username & password diperketat.
+	// Contoh real: admin:p@ssw0rd298 di .env / JS tanpa label.
+	// Anti-FP: username 3-32 alnum+._- (tanpa [,/,~, dll), password 8-32 dengan looksLikeSecretValue.
+	{
+		Name:       "Bare high-entropy credentials (user:pass)",
+		Regex:      regexp.MustCompile(`\b([A-Za-z][A-Za-z0-9._\-]{2,31}:[A-Za-z0-9!@#$%^&*_\-.+]{8,32})\b`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
 	// ─── Generic Sensitive Patterns ───────────────────────────────────────────────
 	// Restrict value to non-space chars only — prevents matching UI strings like
 	// "Forgot password?", "Enter your password", "Reset your password", etc.
