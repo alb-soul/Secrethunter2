@@ -1024,7 +1024,7 @@ var patterns = []Pattern{
 	// ─── Pendo ───────────────────────────────────────────────────────────────────
 	{
 		Name:       "Pendo Integration Key",
-		Regex:      regexp.MustCompile(`(?i)(?:pendo[_\-\s]*)?(?:integration[_\-\s]*)?key["\']?\s*[=:]\s*['"]?([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})['"]?`),
+		Regex:      regexp.MustCompile(`(?i)(?:pendo[_\-\s]*)(?:integration[_\-\s]*)?key["\']?\s*[=:]\s*['"]?([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})['"]?`),
 		Severity:   SevMedium,
 		MatchGroup: 1,
 	},
@@ -2141,6 +2141,144 @@ var patterns = []Pattern{
 		Regex:      regexp.MustCompile(`(?i)pushover[^"\n]{0,60}?(?:user|application|app)?[_\-\s]?(?:key|token)["\']?\s*[:=]\s*["']?([A-Za-z0-9]{30})["']?`),
 		Severity:   SevLow,
 		MatchGroup: 1,
+	},
+
+
+	// ════════════════════════════════════════════════════════════════════════════
+	// NEW SERVICES — BATCH 6 (verified active 2026, context-based, FP-safe)
+	// Keep legacy patterns; only ADD. Most use keyword + value capture.
+	// ════════════════════════════════════════════════════════════════════════════
+
+	// ─── Infra / Cloud active ─────────────────────────────────────────────────
+	{
+		Name:       "Hetzner Cloud API Token (64, context)",
+		Regex:      regexp.MustCompile(`(?i)(?:hetzner|hcloud)[^"\n]{0,40}?(?:api[_\-\s]*)?(?:token|key)["\']?\s*[:=]\s*['"]?([A-Za-z0-9]{64})['"]?`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	{
+		Name:     "Scaleway Access Key (SCW)",
+		Regex:    regexp.MustCompile(`\bSCW[A-Z0-9]{17,}\b`),
+		Severity: SevHigh,
+	},
+	{
+		Name:       "Scaleway Secret Key (context)",
+		Regex:      regexp.MustCompile(`(?i)scaleway[^"\n]{0,40}?secret[^"\n]{0,20}?["\']([A-Za-z0-9+/=]{40,})['"]`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Vultr API Key (context)",
+		Regex:      regexp.MustCompile(`(?i)vultr[^"\n]{0,40}?(?:api[_\-\s]*)?(?:key|token)["\']?\s*[:=]\s*['"]?([a-f0-9\-]{32,40})['"]?`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Linode Personal Access Token (context)",
+		Regex:      regexp.MustCompile(`(?i)linode[^"\n]{0,40}?(?:api[_\-\s]*)?(?:token|key)["\']?\s*[:=]\s*['"]?([a-f0-9]{60,64})['"]?`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "OVH API Key (context)",
+		Regex:      regexp.MustCompile(`(?i)ovh[^"\n]{0,40}?(?:api[_\-\s]*)?(?:key|token|application[_\-\s]*key)["\']?\s*[:=]\s*['"]?([A-Za-z0-9]{20,40})['"]?`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Railway API Token (context)",
+		Regex:      regexp.MustCompile(`(?i)railway[^"\n]{0,40}?(?:api[_\-\s]*)?(?:token|key)["\']?\s*[:=]\s*['"]?([A-Za-z0-9_\-]{24,})['"]?`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "BunnyCDN / Bunny Storage API Key (context)",
+		Regex:      regexp.MustCompile(`(?i)bunny[^"\n]{0,40}?(?:api[_\-\s]*)?(?:key|token)["\']?\s*[:=]\s*['"]?([a-f0-9\-]{32,40})['"]?`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+
+	// ─── AI / GPU active 2025-2026 ────────────────────────────────────────────
+	{
+		Name:       "Fal.ai API Key (key_id:sk_live_...)",
+		Regex:      regexp.MustCompile(`\b[a-z0-9]{6,16}:sk_live_[A-Za-z0-9]{16,}\b`),
+		Severity:   SevHigh,
+	},
+	{
+		Name:     "RunPod API Key (rpa_)",
+		Regex:    regexp.MustCompile(`\brpa_[A-Za-z0-9]{20,}\b`),
+		Severity: SevHigh,
+	},
+	{
+		Name:       "Modal API Key (context)",
+		Regex:      regexp.MustCompile(`(?i)modal[^"\n]{0,40}?(?:api[_\-\s]*)?(?:key|token)["\']?\s*[:=]\s*['"]?([A-Za-z0-9_\-]{20,})['"]?`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Tinybird API Token (context)",
+		Regex:      regexp.MustCompile(`(?i)tinybird[^"\n]{0,40}?(?:api[_\-\s]*)?(?:token|key)["\']?\s*[:=]\s*['"]?([A-Za-z0-9_\-\.]{20,})['"]?`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+	{
+		Name:     "Turso Database URL (libsql://)",
+		Regex:    regexp.MustCompile(`\blibsql://[A-Za-z0-9.\-]+\.turso\.io\b`),
+		Severity: SevMedium,
+	},
+
+	// ─── CDN / Media ──────────────────────────────────────────────────────────
+	{
+		Name:       "Mux Token ID (context)",
+		Regex:      regexp.MustCompile(`(?i)mux[^"\n]{0,40}?token[_\-\s]*id["\']?\s*[:=]\s*['"]?([a-f0-9\-]{32,40})['"]?`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Mux Token Secret (context)",
+		Regex:      regexp.MustCompile(`(?i)mux[^"\n]{0,40}?token[_\-\s]*secret["\']?\s*[:=]\s*['"]?([A-Za-z0-9+/=]{30,})['"]?`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Imgix Signing Key (context)",
+		Regex:      regexp.MustCompile(`(?i)imgix[^"\n]{0,40}?(?:signing[_\-\s]*)?(?:key|token)["\']?\s*[:=]\s*['"]?([a-f0-9]{32,64})['"]?`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+
+	// ─── Payments ─────────────────────────────────────────────────────────────
+	{
+		Name:       "Paddle API Key (context)",
+		Regex:      regexp.MustCompile(`(?i)paddle[^"\n]{0,40}?(?:api[_\-\s]*)?(?:key|token)["\']?\s*[:=]\s*['"]?([A-Za-z0-9_\-]{20,})['"]?`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+
+	// ─── Observability ────────────────────────────────────────────────────────
+	{
+		Name:     "Honeybadger API Key (hbp_)",
+		Regex:    regexp.MustCompile(`\bhbp_[A-Za-z0-9]{20,}\b`),
+		Severity: SevMedium,
+	},
+	{
+		Name:       "Better Stack / Logtail Source Token (context)",
+		Regex:      regexp.MustCompile(`(?i)(?:better[_\-]?stack|logtail)[^"\n]{0,40}?(?:source[_\-\s]*)?(?:token|key)["\']?\s*[:=]\s*['"]?([A-Za-z0-9]{24,})['"]?`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+
+	// ─── Dev / Automation ─────────────────────────────────────────────────────
+	{
+		Name:       "Deno Deploy Token (context)",
+		Regex:      regexp.MustCompile(`(?i)deno[^"\n]{0,40}?(?:deploy[_\-\s]*)?(?:token|key)["\']?\s*[:=]\s*['"]?([A-Za-z0-9_\-]{20,})['"]?`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
+	},
+		{
+		Name:       "Cloudflare R2 S3 URL (r2.cloudflarestorage.com)",
+		Regex:      regexp.MustCompile(`https?://[a-z0-9.\-]+\.r2\.cloudflarestorage\.com`),
+		Severity:   SevLow,
 	},
 
 	// ─── Generic Sensitive Patterns ───────────────────────────────────────────────
