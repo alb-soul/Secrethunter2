@@ -39,7 +39,7 @@ import (
 )
 
 const (
-	version   = "2.3.1"
+	version   = "2.3.2"
 	defaultUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 	maxBodyMB = 10
 	banner    = `
@@ -943,8 +943,11 @@ func isHumanCredFP(patternName, match, lineText string) bool {
 					return true
 				}
 			}
-			// scheme-like
-			if ul == "http" || ul == "https" || ul == "ftp" || ul == "mailto" || ul == "ws" || ul == "wss" || ul == "file" {
+			// scheme-like (including javascript: URIs and CSS !important)
+			if strings.Contains(pl, "!important") {
+				return true
+			}
+			if ul == "http" || ul == "https" || ul == "ftp" || ul == "mailto" || ul == "ws" || ul == "wss" || ul == "file" || ul == "javascript" {
 				return true
 			}
 			// path / color
