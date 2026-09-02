@@ -926,6 +926,23 @@ func isHumanCredFP(patternName, match, lineText string) bool {
 			if uiNoiseWords[ul] || uiNoiseWords[pl] || jsPropNoise[ul] || jsPropNoise[pl] {
 				return true
 			}
+			// Bare pattern: require strong entropy (digit or @!#$%^&*), dot/_/- alone not enough
+			// This kills JS prop chains like o.default.bool, selection:o.default.bool
+			if patternName == "Bare high-entropy credentials (user:pass)" {
+				hasDigit := false
+				hasStrong := false
+				for _, r := range pass {
+					if r >= '0' && r <= '9' {
+						hasDigit = true
+					}
+					if r == '@' || r == '!' || r == '#' || r == '$' || r == '%' || r == '^' || r == '&' || r == '*' {
+						hasStrong = true
+					}
+				}
+				if !hasDigit && !hasStrong {
+					return true
+				}
+			}
 			// scheme-like
 			if ul == "http" || ul == "https" || ul == "ftp" || ul == "mailto" || ul == "ws" || ul == "wss" || ul == "file" {
 				return true
