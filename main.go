@@ -1621,6 +1621,14 @@ func main() {
 
 	setFlags := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
+	// Conflicting short/long aliases set with different values: warn, short wins.
+	// (Long-only use already works via first()/setFlags branches below.)
+	checkAlias := func(short, long, vs, vl string) {
+		if setFlags[short] && setFlags[long] && vs != vl {
+			fmt.Fprintf(os.Stderr, "%s[!] both -%s and --%s set with different values; using -%s=%q%s\n",
+				colorYellow, short, long, short, vs, colorReset)
+		}
+	}
 	threads := *flagThreads
 	if setFlags["threads"] && !setFlags["t"] {
 		threads = *flagThreadsLong
@@ -1629,6 +1637,15 @@ func main() {
 	if setFlags["delay"] && !setFlags["d"] {
 		delayMs = *flagDelayLong
 	}
+	checkAlias("u", "url", *flagURL, *flagURLLong)
+	checkAlias("l", "list", *flagList, *flagListLong)
+	checkAlias("t", "threads", fmt.Sprint(*flagThreads), fmt.Sprint(*flagThreadsLong))
+	checkAlias("d", "delay", fmt.Sprint(*flagDelay), fmt.Sprint(*flagDelayLong))
+	checkAlias("s", "silent", fmt.Sprint(*flagSilent), fmt.Sprint(*flagSilentLong))
+	checkAlias("v", "verbose", fmt.Sprint(*flagVerbose), fmt.Sprint(*flagVerboseLong))
+	checkAlias("o", "output", *flagOutput, *flagOutputLong)
+	checkAlias("F", "file", *flagFileShort, *flagFile)
+	checkAlias("D", "dir", *flagDirShort, *flagDir)
 	if threads < 1 {
 		threads = 1
 	}
