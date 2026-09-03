@@ -39,7 +39,7 @@ import (
 )
 
 const (
-	version   = "2.3.2"
+	version   = "2.3.3"
 	defaultUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 	maxBodyMB = 10
 	banner    = `
@@ -713,7 +713,6 @@ var humanCredPatterns = map[string]bool{
 	"Hardcoded password input value":                     true,
 	"Hardcoded password input value (value before type)": true,
 	"Generic Secret / Password in code":                  true,
-	"Bare high-entropy credentials (user:pass)":         true,
 }
 
 // uiNoiseWords: values that look like secrets but are HTML/JS/UI/CSS noise.
