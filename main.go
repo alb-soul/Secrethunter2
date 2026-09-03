@@ -570,7 +570,7 @@ func scanContentSeq(rawURL, content, contentLower string) []Finding {
 			findings = append(findings, Finding{
 				URL:      rawURL,
 				Pattern:  patternName,
-				Match:    truncate(match, 120),
+				Match:    match,
 				Severity: severity,
 				Line:     lineNum,
 			})
@@ -690,7 +690,7 @@ func mergeCandidates(rawURL, content string, groups [][]patternCandidate) []Find
 			findings = append(findings, Finding{
 				URL:      rawURL,
 				Pattern:  patternName,
-				Match:    truncate(match, 120),
+				Match:    match,
 				Severity: severity,
 				Line:     lineNum,
 			})
@@ -1284,7 +1284,7 @@ func printFinding(cfg *Config, f Finding, w io.Writer) {
 	line := fmt.Sprintf("%s %s | %s | %s\n",
 		colorSeverity(cfg, f.Severity),
 		colorize(cfg, colorCyan, f.Pattern),
-		colorize(cfg, colorGreen, f.Match),
+		colorize(cfg, colorGreen, truncate(f.Match, 120)),
 		colorize(cfg, colorDim, f.URL),
 	)
 	fmt.Fprint(w, line)
@@ -1381,7 +1381,11 @@ func (s *outputStats) BySeverity(sev string) int {
 // emit menulis satu finding: JSON streaming bila --json, otherwise teks warna.
 func emit(cfg *Config, fd Finding, outWriter io.Writer, js *jsonStream, stats *outputStats) {
 	if cfg.OutputJSON && js != nil {
-		js.emit(fd)
+		capped := fd
+		if len([]rune(capped.Match)) > 4096 {
+			capped.Match = truncate(capped.Match, 4096)
+		}
+		js.emit(capped)
 	} else {
 		mu.Lock()
 		printFinding(cfg, fd, outWriter)
@@ -1535,13 +1539,22 @@ func collectDir(cfg *Config, dir string, exts []string) ([]string, error) {
 }
 
 func checkFlareSolverr(baseURL string) bool {
-	resp, err := httpClient.Get(baseURL)
-	if err != nil {
-		return false
+	candidates := []string{baseURL}
+	if trimmed := strings.TrimSuffix(baseURL, "/v1"); trimmed != baseURL {
+		candidates = append(candidates, trimmed+"/")
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return strings.Contains(string(body), "FlareSolverr")
+	for _, u := range candidates {
+		resp, err := httpClient.Get(u)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if strings.Contains(string(body), "FlareSolverr") {
+			return true
+		}
+	}
+	return false
 }
 
 type multiFlag []string

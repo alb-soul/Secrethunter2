@@ -624,7 +624,7 @@ var patterns = []Pattern{
 	// ─── Social Media ────────────────────────────────────────────────────────────
 	{
 		Name:     "Facebook / Meta Access Token",
-		Regex:    regexp.MustCompile(`EAACEdEose0cBA[0-9A-Za-z]+`),
+		Regex:    regexp.MustCompile(`\bEAA[A-Za-z0-9]{50,}`),
 		Severity: SevHigh,
 	},
 	{
@@ -808,7 +808,7 @@ var patterns = []Pattern{
 	// ─── JWT ─────────────────────────────────────────────────────────────────────
 	{
 		Name:     "JSON Web Token (JWT)",
-		Regex:    regexp.MustCompile(`ey[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}`),
+		Regex:    regexp.MustCompile(`ey[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{0,}`),
 		Severity: SevMedium,
 	},
 
