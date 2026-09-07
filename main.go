@@ -705,17 +705,179 @@ func mergeCandidates(rawURL, content string, groups [][]patternCandidate) []Find
 	return findings
 }
 
-// standaloneTokenPatterns: token-like patterns that must stand alone, not be a
-// slice of a longer base64 run (inline images, data URIs, Blogger photo URLs).
-// Go RE2 has no lookarounds, so the adjacency check is done here in code.
+// standaloneTokenPatterns: bare-prefix token patterns that must stand alone,
+// not be a slice of a longer base64 run (inline images, data URIs, Blogger
+// photo URLs, Cloudflare challenge blobs). Go RE2 has no lookarounds, so the
+// adjacency check is done here in code.
+// Deliberately excluded: Telegram Bot Token (real tokens glue to 'bot' in
+// /bot<token>/ URLs), JWT family (own alg:none logic), URI/key-block/context
+// patterns (already anchored).
 var standaloneTokenPatterns = map[string]bool{
-	"Adyen API Key (AQE\u2026)": true,
-	"Google API Key":                true,
+	"Adyen API Key (AQE\u2026)":                        true,
+	"Google API Key":                                   true,
+	"GitHub Personal Access Token (ghp_)":              true,
+	"GitHub Fine-grained PAT":                          true,
+	"GitHub OAuth Access Token (gho_)":                 true,
+	"GitHub App User-to-Server Token (ghu_)":           true,
+	"GitHub App Server-to-Server Token (ghs_)":         true,
+	"GitHub App Refresh Token (ghr_)":                  true,
+	"GitLab Personal Access Token":                     true,
+	"GitLab Runner Registration Token":                 true,
+	"GitLab CI/CD Job Token":                           true,
+	"GitLab Deploy Token":                              true,
+	"GitLab OAuth App Secret (gloas-)":                 true,
+	"GitLab Pipeline Trigger Token (glptt-)":           true,
+	"GitLab Feed Token (glfeed-)":                      true,
+	"Grafana API Key":                                  true,
+	"Stripe Live Secret Key":                           true,
+	"Stripe Test Secret Key":                           true,
+	"Stripe Live Publishable Key":                      true,
+	"Stripe Restricted Key":                            true,
+	"Stripe Webhook Secret":                            true,
+	"Slack Bot Token (xoxb-)":                          true,
+	"Slack User Token (xoxp-)":                         true,
+	"Slack App-level Token (xapp-)":                    true,
+	"Slack OAuth v2 Token (xoxe-)":                     true,
+	"Square Access Token":                              true,
+	"Square App ID / Client Secret":                    true,
+	"Square Sandbox Token":                             true,
+	"Twitter/X Bearer Token":                           true,
+	"Twilio Account SID":                               true,
+	"Twilio API Key SID":                               true,
+	"Mailgun Private API Key":                          true,
+	"Mailgun Public API Key":                           true,
+	"Shopify Admin API Access Token":                   true,
+	"Shopify Partner API Token":                        true,
+	"Shopify Custom App Token":                         true,
+	"Shopify Shared Secret":                            true,
+	"Mapbox Secret Token":                              true,
+	"Mapbox Public Token":                              true,
+	"Mapbox Temporary Token":                           true,
+	"Razorpay Live Key":                                true,
+	"Razorpay Test Key":                                true,
+	"AWS Access Key ID":                                true,
+	"AWS STS / Assumed Role Token":                     true,
+	"Alibaba Cloud AccessKey ID (LTAI)":                true,
+	"Tencent Cloud SecretId (AKID)":                    true,
+	"Scaleway Access Key (SCW)":                        true,
+	"Google OAuth Access Token":                        true,
+	"Firebase Cloud Messaging (FCM) Server Key":        true,
+	"Facebook / Meta Access Token":                     true,
+	"Instagram Graph API Token (EAAJj...)":             true,
+	"WhatsApp Cloud API Token (EAAG)":                  true,
+	"OpenAI API Key (legacy)":                          true,
+	"OpenAI API Key (project)":                         true,
+	"OpenAI Service Account Key":                       true,
+	"Anthropic API Key":                                true,
+	"Anthropic Admin Key (sk-ant-admin01-)":            true,
+	"Replicate API Token":                              true,
+	"Hugging Face Access Token":                        true,
+	"Cerebras API Key (csk-)":                          true,
+	"NVIDIA NIM API Key (nvapi-)":                      true,
+	"Voyage AI API Key (pa-)":                          true,
+	"Groq API Key (gsk_)":                              true,
+	"OpenRouter API Key (sk-or-v1-)":                   true,
+	"Fireworks AI Key (fw_)":                           true,
+	"Perplexity API Key (pplx-)":                       true,
+	"xAI API Key (xai-)":                               true,
+	"LangSmith API Key (lsv2_)":                        true,
+	"Pinecone API Key (pcsk_)":                         true,
+	"Tavily API Key (tvly-)":                           true,
+	"Firecrawl API Key (fc-)":                          true,
+	"LlamaCloud / LlamaIndex Key (llx-)":               true,
+	"Fly.io Token (fm2_)":                              true,
+	"Fly.io Legacy Token (fo1_)":                       true,
+	"Figma Access Token (figd_/figu_/figr_)":           true,
+	"New Relic User API Key (NRAK-)":                   true,
+	"New Relic Insights Query Key (NRIQ)":              true,
+	"Dynatrace Token":                                  true,
+	"PubNub Subscribe Key":                             true,
+	"PubNub Publish Key":                               true,
+	"PubNub Secret Key (sec-c-)":                       true,
+	"PostHog Personal API Key (phx_)":                  true,
+	"PostHog Project API Key (phc_)":                   true,
+	"Axiom.co Dataset Token (xaat-)":                   true,
+	"Dropbox Long-lived Token":                         true,
+	"NPM Access Token":                                 true,
+	"PyPI Upload Token (pypi-)":                        true,
+	"RubyGems API Key (rubygems_)":                     true,
+	"SonarQube User Token":                             true,
+	"SonarQube Project Analysis Token":                 true,
+	"SonarCloud Token":                                 true,
+	"Linear API Key":                                   true,
+	"Notion Integration Token":                         true,
+	"Notion Internal Integration Token (ntn_)":         true,
+	"Airtable Personal Access Token":                   true,
+	"Sentry Auth Token (sntrys_/sntryu_)":              true,
+	"Postman API Key (PMAK-)":                          true,
+	"Tailscale Auth/API Key (tskey-)":                  true,
+	"Doppler Token (dp.xx.)":                           true,
+	"Databricks Personal Access Token (dapi)":          true,
+	"DigitalOcean Personal Access Token":               true,
+	"DigitalOcean OAuth Token":                         true,
+	"DigitalOcean Refresh Token":                       true,
+	"DigitalOcean Functions Token (dof_v1_)":           true,
+	"DigitalOcean Spaces Access Key (DO00)":            true,
+	"Vault Service Token (hvs.)":                       true,
+	"Vault Batch Token (hvb.)":                         true,
+	"Vault Recovery Token (hvr.)":                      true,
+	"Vercel Access Token (vcp_)":                       true,
+	"PlanetScale Service Token (pscale_tkn_)":          true,
+	"PlanetScale DB Password (pscale_pw_)":             true,
+	"PlanetScale OAuth Token (pscale_oauth_)":          true,
+	"Supabase Publishable Key (sb_publishable_)":       true,
+	"Supabase Secret Key (sb_secret_)":                 true,
+	"Clerk Secret Key (sk_live_/sk_test_)":             true,
+	"Clerk Publishable Key (pk_live_/pk_test_)":        true,
+	"WorkOS Secret Key (sk_test/sk_prod/sk_live)":      true,
+	"Cal.com API Key (cal_live/cal_test)":              true,
+	"SendGrid API Key":                                 true,
+	"Brevo API Key (xkeysib-)":                         true,
+	"Brevo SMTP Key (xsmtpsib-)":                       true,
+	"Flutterwave Secret/Public Key (FLW...-X)":         true,
+	"Shippo API Key":                                   true,
+	"Typeform Personal Token (tfp_)":                   true,
+	"Adafruit IO Key (aio_)":                           true,
+	"Resend API Key (re_)":                             true,
+	"Docker Hub Personal Access Token (dckr_pat_)":     true,
+	"Render API Key (rnd_)":                            true,
+	"Pulumi Access Token (pul-)":                       true,
+	"Xata API Key (xau_)":                              true,
+	"Ory API Key (ory_pat_/ory_apikey_/ory_wak_)":      true,
+	"Jina AI API Key (jina_)":                          true,
+	"Apify API Token (apify_api_)":                     true,
+	"n8n Personal API Key (n8n_api_)":                  true,
+	"Weglot API Key":                                   true,
+	"Netlify Personal Access Token (nfp_)":             true,
+	"JFrog Access Token (AKCp)":                        true,
+	"Atlassian API Token (ATATT3)":                     true,
+	"Atlassian Scoped Access Token (ATCTT3)":           true,
+	"Bitbucket App Password (ATBB)":                    true,
+	"Twitch OAuth Token":                               true,
+	"Salesforce Access Token":                          true,
+	"Yandex API Key (AQVN)":                            true,
+	"ClickUp Personal Token (pk_<id>_)":                true,
+	"Stytch Secret (secret-live/test-)":                true,
+	"crates.io API Token (cio)":                        true,
+	"Cloudflare Turnstile Secret Key (0x3AAAA)":        true,
+	"Cloudflare Turnstile Site Key (0x4AAAA)":          true,
+	"RunPod API Key (rpa_)":                            true,
+	"LaunchDarkly SDK/Mobile/API Key (sdk-/mob-/api-)": true,
+	"1Password Service Account Token (ops_)":           true,
+	"Terraform Cloud / HCP Token (atlasv1)":            true,
+	"Fal.ai API Key (key_id:sk_live_...)":              true,
+	"PayPal / Braintree Access Token":                  true,
+	"HubSpot Private App Token":                        true,
+	"Discord Bot Token":                                true,
 }
 
-// isBase64Slice reports whether the match at [startPos,endPos) is embedded in
-// a longer base64/base64url run. A left '=' (key=...) is allowed as assignment;
-// a right '=' means the 140-char cap cut a longer token/blob mid-run.
+// isBase64Slice reports whether the match at [startPos,endPos) is a slice of a
+// longer base64/base64url run (inline images, data URIs, Blogger photo URLs,
+// Cloudflare challenge blobs) rather than a standalone token.
+// Left: any base64 char means glued (a left '=' as in key=... is allowed).
+// Right: a short overhang is tolerated (real token longer than the pattern
+// cap, e.g. 47-char pk_live_ vs a 34-char cap); a long continuation means
+// the pattern cap cut a blob mid-run.
 func isBase64Slice(content string, startPos, endPos int) bool {
 	isB64 := func(c byte) bool {
 		return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' ||
@@ -726,7 +888,15 @@ func isBase64Slice(content string, startPos, endPos int) bool {
 	}
 	if endPos < len(content) {
 		if c := content[endPos]; isB64(c) || c == '=' {
-			return true
+			n := 0
+			for i := endPos; i < len(content) && i < endPos+128; i++ {
+				if isB64(content[i]) || content[i] == '=' {
+					n++
+				}
+			}
+			if n >= 64 {
+				return true
+			}
 		}
 	}
 	return false

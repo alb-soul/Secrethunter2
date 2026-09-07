@@ -398,3 +398,17 @@ func TestGoogleStandalone(t *testing.T) {
 	blob := "LerGoUnYsuHrnqUadaK9vTTte923e70+Fq1rLbf7zrwWYY7Kpc+X4qWGqNWnywhN2Tbir1IzTXvN6dbPeMbclbfB/4O6dK81l8IPhlHMoUkyeFbK8cn" + key + "zm73bX8zta56suLuKK0VGtnFaUWmkvYYRJJdPdorTRelj0C1gtLHT003TrS00fTIREFsNH06y0nS4Yyv"
 	notFired(t, "<html>"+blob+"</html>", gname)
 }
+
+// GitHub tokens: standalone fires; slice of a Cloudflare challenge blob must not.
+func TestGitHubStandalone(t *testing.T) {
+	const ghrName = "GitHub App Refresh Token (ghr_)"
+	key := "ghr_0mTO3m8FUtRpN8yfjbol30N8eTmRBxuUWmAqiJ30ugI11RgUufImungwy8k3jWvJk2Ol81mxVdit"
+	if len(key) != 80 {
+		t.Fatalf("test key length = %d, want 80", len(key))
+	}
+	fired(t, `"github_refresh_token": "`+key+`"`, ghrName, "HIGH")
+	fired(t, "GITHUB_REFRESH_TOKEN="+key+"\n", ghrName, "HIGH")
+	cf := "md: '.XC6vggKFnMvDDJNnDFCZPb9uef3_3NhrPZpq0s.Kmk-1788763374-1.2.1.1-DDJtstVSPbOnwA.trkI2kI8_KNRRf..SeQs3k17LwmZbnos7qUMjNgDVANl3wKnzsldhG9W7eS.eA1"+key+"3FWb69xm2eW4qBPwf.5hcln6TE229bLuWc2OBa5VlcGaJKHXak7YQ9D8zfiwpT8q9FKkTzBXJl3MX3WKfhLPoGbAfW9Qot5"
+	notFired(t, "<title>Just a moment...</title><script>window._cf_chl_opt={cType: 'managed',"+cf+"};</script>", ghrName)
+	notFired(t, "zzghp_AbCdEfGhIjKlMnOpQrStUvWx1234567890abcdYY", "GitHub Personal Access Token (ghp_)")
+}
