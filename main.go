@@ -548,6 +548,9 @@ func scanContentSeq(rawURL, content, contentLower string) []Finding {
 					continue
 				}
 			}
+			if standaloneTokenPatterns[p.Name] && isBase64Slice(content, startPos, endPos) {
+				continue
+			}
 			if humanCredPatterns[p.Name] && isHumanCredFP(p.Name, match, lt) {
 				continue
 			}
@@ -668,6 +671,9 @@ func mergeCandidates(rawURL, content string, groups [][]patternCandidate) []Find
 					continue
 				}
 			}
+			if standaloneTokenPatterns[p.Name] && isBase64Slice(content, c.startPos, c.endPos) {
+				continue
+			}
 			if humanCredPatterns[p.Name] && isHumanCredFP(p.Name, match, lt) {
 				continue
 			}
@@ -699,7 +705,32 @@ func mergeCandidates(rawURL, content string, groups [][]patternCandidate) []Find
 	return findings
 }
 
+// standaloneTokenPatterns: token-like patterns that must stand alone, not be a
+// slice of a longer base64 run (inline images, data URIs, Blogger photo URLs).
+// Go RE2 has no lookarounds, so the adjacency check is done here in code.
+var standaloneTokenPatterns = map[string]bool{
+	"Adyen API Key (AQE\u2026)": true,
+	"Google API Key":                true,
+}
 
+// isBase64Slice reports whether the match at [startPos,endPos) is embedded in
+// a longer base64/base64url run. A left '=' (key=...) is allowed as assignment;
+// a right '=' means the 140-char cap cut a longer token/blob mid-run.
+func isBase64Slice(content string, startPos, endPos int) bool {
+	isB64 := func(c byte) bool {
+		return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' ||
+			c == '+' || c == '/' || c == '_' || c == '-'
+	}
+	if startPos > 0 && isB64(content[startPos-1]) {
+		return true
+	}
+	if endPos < len(content) {
+		if c := content[endPos]; isB64(c) || c == '=' {
+			return true
+		}
+	}
+	return false
+}
 
 // humanCredPatterns marks pattern names that need extra anti-FP checks.
 var humanCredPatterns = map[string]bool{

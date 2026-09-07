@@ -364,3 +364,37 @@ func TestParallelEquivalence(t *testing.T) {
 }
 
 // CLI: --json valid, -o file, truncate display 120 vs JSON full
+
+// Adyen: standalone token fires; slice of a longer base64 run must not.
+func TestAdyenStandalone(t *testing.T) {
+	const adyenName = "Adyen API Key (AQE\u2026)"
+	key := "AQE8bXe27PlCPZPgyisg6OKCFQlrl9zc4obbn6KXzqb7TtGaQ5CVd4RISThmjnLdvfPqlIqXcIMP93"
+	if len(key) != 78 {
+		t.Fatalf("test key length = %d, want 78", len(key))
+	}
+	// true positives: quoted, bare assignment, API header
+	fired(t, `"adyen_api_key": "`+key+`"`, adyenName, "CRITICAL")
+	fired(t, "adyen_api_key="+key+"\n", adyenName, "CRITICAL")
+	fired(t, "X-API-Key: "+key, adyenName, "CRITICAL")
+	// false positives: embedded in longer base64 runs
+	blob := "FyJ58N/94+h5+e8PVrNq6DuKescCoQVwE+xp0FYRqTa6QJwgCHMchlUziurIShVspRSye5PU3V9M1AIkU3HTTb/nrTZ/" + key + "xx==" + "D6vxh8LJyZreDjRz/5aw0+zmXimCwi9Ols3UVbO1x33UP8+Id/5IVnXiUGfOUzh3HofrMp5ocqq0d"
+	notFired(t, "<html>"+blob+"</html>", adyenName)
+	blogger := "https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEgt5TE65EeqyWgBg-" + key + "-Ff3xP15NEb7rBmzftiNRh6boGSoEeV0Aa6StjOxScNtm0Sa4Uk/w1200-h630-p-k-no-nu/image.jpg"
+	notFired(t, `<meta property='og:image' content='`+blogger+`'/>`, adyenName)
+	jpeg := "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAf/Y/+AA=="
+	notFired(t, `<img src="`+jpeg+`">`, adyenName)
+}
+
+// Google API Key: standalone fires; slice of a longer base64 run must not.
+func TestGoogleStandalone(t *testing.T) {
+	const gname = "Google API Key"
+	key := "AIza6nPfRRlgzeUwtXaUklgTszjTwGDppSjSjFr"
+	if len(key) != 39 {
+		t.Fatalf("test key length = %d, want 39", len(key))
+	}
+	fired(t, `"google_api_key": "`+key+`"`, gname, "HIGH")
+	fired(t, "google_api_key="+key+"\n", gname, "HIGH")
+	fired(t, "https://maps.googleapis.com/maps/api/js?key="+key+"&callback=init", gname, "HIGH")
+	blob := "LerGoUnYsuHrnqUadaK9vTTte923e70+Fq1rLbf7zrwWYY7Kpc+X4qWGqNWnywhN2Tbir1IzTXvN6dbPeMbclbfB/4O6dK81l8IPhlHMoUkyeFbK8cn" + key + "zm73bX8zta56suLuKK0VGtnFaUWmkvYYRJJdPdorTRelj0C1gtLHT003TrS00fTIREFsNH06y0nS4Yyv"
+	notFired(t, "<html>"+blob+"</html>", gname)
+}
