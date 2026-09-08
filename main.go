@@ -869,6 +869,22 @@ var standaloneTokenPatterns = map[string]bool{
 	"PayPal / Braintree Access Token":                  true,
 	"HubSpot Private App Token":                        true,
 	"Discord Bot Token":                                true,
+	"Google Cloud Service Account (type field)":         true,
+	"Supabase Service Role Key":                         true,
+	"Slack Webhook URL":                                 true,
+	"Mailchimp API Key":                                 true,
+	"Telegram Bot API Token":                            true,
+	"Microsoft Teams Webhook":                           true,
+	"Azure SAS Token":                                   true,
+	"Asana Personal Access Token":                       true,
+	"Cloudinary URL":                                    true,
+	"Grafana Cloud Access Policy Token (glc_)":          true,
+	"Amazon MWS Auth Token":                             true,
+	"Ghost Admin API Key (id:secret)":                   true,
+	"DeepL API Key (free :fx)":                          true,
+	"Honeybadger API Key (hbp_)":                        true,
+
+
 }
 
 // isBase64Slice reports whether the match at [startPos,endPos) is a slice of a

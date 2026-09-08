@@ -46,6 +46,19 @@ var patterns = []Pattern{
 		Severity: SevCritical,
 	},
 
+	{
+		Name:     "MinIO Access Key",
+		Regex:    regexp.MustCompile(`\bminio[A-Za-z0-9]{20,}\b`),
+		Severity: SevHigh,
+	},
+	{
+		Name:       "MinIO Secret Key",
+		Regex:      regexp.MustCompile(`(?i)minio[_\-\s]*secret[_\-\s]*key["']?\s*[:=]\s*['"]?([A-Za-z0-9+/=]{40,})['"]?`),
+		Severity:   SevCritical,
+		MatchGroup: 1,
+	},
+
+
 	// ─── Private / Certificate Keys ─────────────────────────────────────────────
 	{
 		Name:     "RSA Private Key",
@@ -294,7 +307,7 @@ var patterns = []Pattern{
 	{
 		Name:     "Square App ID / Client Secret",
 		Regex:    regexp.MustCompile(`sq0[a-z]{3}-[0-9A-Za-z_\-]{22,43}`),
-		Severity: SevHigh,
+		Severity: SevMedium,
 	},
 	{
 		Name:       "Square Sandbox Token",
@@ -312,7 +325,7 @@ var patterns = []Pattern{
 	{
 		Name:       "PayPal Client ID/Secret (context)",
 		Regex:      regexp.MustCompile(`(?i)paypal[_\-\s]*(?:client[_\-\s]*)?(?:id|secret)["\']?\s*[=:]\s*['"]?([A-Za-z0-9_\-]{15,80})['"]?`),
-		Severity:   SevHigh,
+		Severity:   SevMedium,
 		MatchGroup: 1,
 	},
 
@@ -516,7 +529,7 @@ var patterns = []Pattern{
 	{
 		Name:       "New Relic License Key (context)",
 		Regex:      regexp.MustCompile(`(?i)(?:new[_\-\s]*relic[_\-\s]*)?license[_\-\s]*key["\']?\s*[=:]\s*['"]?([a-f0-9]{40})['"]?`),
-		Severity:   SevCritical,
+		Severity:   SevHigh,
 		MatchGroup: 1,
 	},
 	// NRII prefix not confirmed by official docs or keyhacks — use context-based
@@ -862,7 +875,7 @@ var patterns = []Pattern{
 	{
 		Name:       "Spotify Client ID/Secret (context)",
 		Regex:      regexp.MustCompile(`(?i)spotify[_\-\s]*(?:client[_\-\s]*)?(?:id|secret)["\']?\s*[=:]\s*['"]?([a-f0-9]{32})['"]?`),
-		Severity:   SevHigh,
+		Severity:   SevMedium,
 		MatchGroup: 1,
 	},
 
@@ -945,7 +958,7 @@ var patterns = []Pattern{
 	{
 		Name:       "Supabase Anon/Public Key (context)",
 		Regex:      regexp.MustCompile(`(?i)supabase[_\-\s]*(?:anon|public|service[_\-\s]*role)[_\-\s]*(?:key|token)["\']?\s*[=:]\s*['"]?(eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+)['"]?`),
-		Severity:   SevHigh,
+		Severity:   SevLow,
 		MatchGroup: 1,
 	},
 
@@ -1097,7 +1110,7 @@ var patterns = []Pattern{
 	{
 		Name:       "LinkedIn Client ID/Secret",
 		Regex:      regexp.MustCompile(`(?i)linkedin[_\-\s]*(?:client[_\-\s]*)?(?:id|secret)["\']?\s*[=:]\s*['"]?([A-Za-z0-9]{12,20})['"]?`),
-		Severity:   SevHigh,
+		Severity:   SevMedium,
 		MatchGroup: 1,
 	},
 
@@ -1166,9 +1179,14 @@ var patterns = []Pattern{
 	// labelled Stripe (dedup keeps one finding per value). Clerk keys are usually
 	// longer (base64 FAPI URL), so these catch the Clerk-only cases.
 	{
-		Name:     "Clerk Secret Key (sk_live_/sk_test_)",
-		Regex:    regexp.MustCompile(`\bsk_(?:live|test)_[A-Za-z0-9]{35,}\b`),
+		Name:     "Clerk Secret Key (sk_live_)",
+		Regex:    regexp.MustCompile(`\bsk_live_[A-Za-z0-9]{35,}\b`),
 		Severity: SevCritical,
+	},
+	{
+		Name:     "Clerk Secret Key (sk_test_)",
+		Regex:    regexp.MustCompile(`\bsk_test_[A-Za-z0-9]{35,}\b`),
+		Severity: SevMedium,
 	},
 	{
 		Name:     "Clerk Publishable Key (pk_live_/pk_test_)",
@@ -1396,9 +1414,14 @@ var patterns = []Pattern{
 
 	// ─── Flutterwave ────────────────────────────────────────────────────────────
 	{
-		Name:     "Flutterwave Secret/Public Key (FLW...-X)",
-		Regex:    regexp.MustCompile(`\bFLW(?:SECK|PUBK)(?:_TEST)?-[a-f0-9]{32}-X\b`),
+		Name:     "Flutterwave Secret Key (FLWSECK...)",
+		Regex:    regexp.MustCompile(`\bFLWSECK(?:_TEST)?-[a-f0-9]{32}-X\b`),
 		Severity: SevCritical,
+	},
+	{
+		Name:     "Flutterwave Public Key (FLWPUBK...)",
+		Regex:    regexp.MustCompile(`\bFLWPUBK(?:_TEST)?-[a-f0-9]{32}-X\b`),
+		Severity: SevMedium,
 	},
 
 	// ─── AI providers (modern, prefixed) ────────────────────────────────────────
@@ -1455,9 +1478,14 @@ var patterns = []Pattern{
 		Severity: SevHigh,
 	},
 	{
-		Name:     "Stytch Secret (secret-live/test-)",
-		Regex:    regexp.MustCompile(`\bsecret-(?:live|test)-[A-Za-z0-9=_\-]{36,}`),
+		Name:     "Stytch Live Secret (secret-live-)",
+		Regex:    regexp.MustCompile(`\bsecret-live-[A-Za-z0-9=_\-]{36,}\b`),
 		Severity: SevCritical,
+	},
+	{
+		Name:     "Stytch Test Secret (secret-test-)",
+		Regex:    regexp.MustCompile(`\bsecret-test-[A-Za-z0-9=_\-]{36,}\b`),
+		Severity: SevMedium,
 	},
 
 	// ─── (B) Context-based additions (no distinctive prefix) ────────────────────

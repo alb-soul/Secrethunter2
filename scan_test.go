@@ -298,7 +298,7 @@ func TestMoreFamilies2(t *testing.T) {
 		{`jdbc:oracle:thin:scott/tiger@dbhost:1521/orcl`, "Oracle JDBC Thin URL"},
 		{`dbhost:5432:mydb:bob:s3cretPass99`, "PostgreSQL .pgpass entry"},
 		{`travis_token = "AbCdEfGhIjKlMnOpQrStUvWx12"`, ""},
-		{`FLWSECK_TEST-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6-X`, "Flutterwave Secret/Public Key (FLW...-X)"},
+		{`FLWSECK_TEST-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6-X`, "Flutterwave Secret Key (FLWSECK...)"},
 		{`atlassian_api_token=ATATT3xFf0AbCdEfGhIjKlMnOpQrStUvWx1234567890AbCdEfGhIjKlMnOpQrStUvWx1234567890AbCdEfGhIjKlMnOpQrStUvWx1234567890abcd_extra`, "Atlassian API Token (ATATT3)"},
 		{`linkedin_client_secret = "AbCdEfGhIjKlMnOp"`, "LinkedIn Client ID/Secret"},
 		{`datadog_api_key = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"`, ""},
