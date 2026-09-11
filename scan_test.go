@@ -131,6 +131,16 @@ func TestNegatives(t *testing.T) {
 	notFired(t, `password = "changeme123456"`, "Generic Secret / Password in code")
 }
 
+// ── binus-2026-09: pola baru kasus 1 ──
+func TestBinusMissingSecrets(t *testing.T) {
+	fired(t, `var getApiAuthToken="Basic RUREQTY1N0QtNzg0OS00MDZELTlFRDctMzNBMkQzQzU3QTUy";`, "Basic Auth Token in code", "HIGH")
+	fired(t, `var getApiSIDAuthToken="Basic RUM5NjhDN0YtMzExNS00MjNDLUE4MjctMzRCNTZDQTM5MzFD";`, "Basic Auth Token in code", "HIGH")
+	fired(t, `var getApiExamToken="Basic MENCQjBDMzUtMENDMi00NEIyLUI4REQtOUQzNDg1RkRGMDQ4";`, "Basic Auth Token in code", "HIGH")
+	fired(t, `REDPER="%v$4T!9CRqE_[G-="`, "Encryption Key in code", "HIGH")
+	fired(t, `clientId="ad768ba0-0059-46cf-ac71-c4e627361377"`, "OAuth Client ID (UUID)", "MEDIUM")
+	notFired(t, `var x="eyTunggakanKeuanganPrivileges.SurveyOutstandingMasterConfiguration.Menu";`, "JSON Web Token (JWT)")
+}
+
 // square/twitter data-uri guard
 func TestDataURIGuard(t *testing.T) {
 	content := `<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==">`

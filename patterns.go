@@ -821,7 +821,7 @@ var patterns = []Pattern{
 	// ─── JWT ─────────────────────────────────────────────────────────────────────
 	{
 		Name:     "JSON Web Token (JWT)",
-		Regex:    regexp.MustCompile(`ey[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{0,}`),
+		Regex:    regexp.MustCompile(`eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{0,}`),
 		Severity: SevMedium,
 	},
 
@@ -1854,6 +1854,14 @@ var patterns = []Pattern{
 		Severity:   SevHigh,
 		MatchGroup: 1,
 	},
+	{
+		// BUGFIX binus-2026-09: getApiAuthToken="Basic <b64>" (assignment form,
+		// bukan header) lolos — pola lama mensyaratkan prefix "authorization:".
+		Name:       "Basic Auth Token in code",
+		Regex:      regexp.MustCompile(`(?i)(?:\w*?(?:auth[_\-]?token|token|authorization|basic[_\-]?auth|secret|key))["']?\s*[=:]\s*['"]Basic\s+([A-Za-z0-9+/]{16,}={0,2})['"]`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
 
 
 	// ════════════════════════════════════════════════════════════════════════════
@@ -2337,6 +2345,21 @@ var patterns = []Pattern{
 		Name:     "GCP Service Account Email",
 		Regex:    regexp.MustCompile(`\b[a-z][a-z0-9\-]{4,28}@[a-z][a-z0-9\-]{4,28}\.iam\.gserviceaccount\.com\b`),
 		Severity: SevMedium,
+	},
+	{
+		// BUGFIX binus-2026-09: REDPER="%v$4T!9CRqE_[G-=" (kunci enkripsi custom
+		// untuk auth token di localStorage) — tidak ada pola key-name generik.
+		Name:       "Encryption Key in code",
+		Regex:      regexp.MustCompile(`(?i)(?:redper|enc(?:ryption)?[_\-]?(?:key|pass(?:word|phrase)?)|crypto[_\-]?key|secret[_\-]?key)["']?\s*[=:]\s*['"]([^'"\s]{6,64})['"]`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	{
+		// BUGFIX binus-2026-09: clientId AzureAD/MSAL (UUID kontekstual).
+		Name:       "OAuth Client ID (UUID)",
+		Regex:      regexp.MustCompile(`(?i)(?:client[_\-]?id|application[_\-]?(?:client[_\-]?)?id)["']?\s*[=:]\s*['"]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})['"]`),
+		Severity:   SevMedium,
+		MatchGroup: 1,
 	},
 
 }
