@@ -223,6 +223,10 @@ func TestMoreFamilies(t *testing.T) {
 		{`twilio_auth_token = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"`, "Twilio Auth Token"},
 		{`sid=ACa1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6`, "Twilio Account SID"},
 	{`app_sid=APa1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6`, "Twilio App SID"},
+	{`refresh_token="1//0abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV"`, "Google OAuth Refresh Token (1//0...)"},
+	{`xoxa-1234567890-9876543210-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789`, "Slack App Token (xoxa-)"},
+	{`BINANCE_API_KEY = "AbCdEf12GhIjKl34MnOpQrSt"`, "Binance API Key (context)"},
+	{`kraken_api_key = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUv"`, "Kraken API Key (context)"},
 		{`SENDGRID_API_KEY=SG.AbCdEfGhIjKlMnOpQrStUv.abcdefghijklmnopqrstuvwxyz0123456789_X-Ab12`, "SendGrid API Key"},
 		{`sq0idp-AbCdEfGhIjKlMnOpQrStUvWx12`, ""}, // Square App ID format differs; just ensure no crash, may or may not fire
 		{`hvs.AbCdEfGhIjKlMnOpQrStUvWx12`, "Vault Service Token (hvs.)"},

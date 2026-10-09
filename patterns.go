@@ -47,9 +47,11 @@ var patterns = []Pattern{
 	},
 
 	{
-		Name:     "MinIO Access Key",
-		Regex:    regexp.MustCompile(`\bminio[A-Za-z0-9]{20,}\b`),
-		Severity: SevHigh,
+		// bare `minio<20+>` FP on bucket/endpoint strings; require an access-key assignment
+		Name:       "MinIO Access Key (context)",
+		Regex:      regexp.MustCompile(`(?i)minio[^"\n]{0,40}?(?:access[_\-\s]*)?(?:key|id)["']?\s*[:=]\s*['"]?([A-Za-z0-9]{16,32})['"]?`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
 	},
 	{
 		Name:       "MinIO Secret Key",
@@ -107,6 +109,11 @@ var patterns = []Pattern{
 		Regex:    regexp.MustCompile(`ya29\.[0-9A-Za-z_\-]{100,200}`),
 		Severity: SevCritical,
 	},
+	{
+		Name:     "Google OAuth Refresh Token (1//0...)",
+		Regex:    regexp.MustCompile(`\b1//0[a-zA-Z0-9_\-]{28,}\b`),
+		Severity: SevHigh,
+	},
 	// Bare 6[...]{39} matches URL slugs, article IDs, etc. — require reCAPTCHA context
 	{
 		Name:       "Google reCAPTCHA Site Key",
@@ -131,9 +138,11 @@ var patterns = []Pattern{
 		Severity: SevHigh,
 	},
 	{
+		// web-SDK apiKey is public by design (firebaseConfig ships to browsers);
+		// the sensitive one is the service-account key, matched separately above.
 		Name:       "Firebase API Key / Config",
 		Regex:      regexp.MustCompile(`(?i)firebase[A-Za-z]*(?:Config|apiKey|key)[\s]*[=:]\s*['"]?(AIza[0-9A-Za-z_\-]{35})['"]?`),
-		Severity:   SevHigh,
+		Severity:   SevMedium,
 		MatchGroup: 1,
 	},
 
@@ -248,7 +257,13 @@ var patterns = []Pattern{
 	{
 		Name:     "Slack OAuth v2 Token (xoxe-)",
 		Regex:    regexp.MustCompile(`xoxe\.[A-Za-z0-9\-]{150,}`),
-		Severity: SevCritical,
+		Severity: SevHigh,
+	},
+	{
+		// app-level tokens also issued as xoxa-<appid>-<workspace>-<hash>
+		Name:     "Slack App Token (xoxa-)",
+		Regex:    regexp.MustCompile(`\bxoxa-[0-9]+-[0-9]+-[A-Za-z0-9]{30,}\b`),
+		Severity: SevHigh,
 	},
 
 	// ─── SendGrid ────────────────────────────────────────────────────────────────
@@ -594,9 +609,10 @@ var patterns = []Pattern{
 		Severity: SevMedium,
 	},
 	{
+		// publish key is public by design (clients embed it to publish); sensitive = sec-c- above.
 		Name:     "PubNub Publish Key",
 		Regex:    regexp.MustCompile(`pub-c-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`),
-		Severity: SevHigh,
+		Severity: SevLow,
 	},
 	// PubNub Secret Key = "sec-c-" + base64(UUID) — official format is 44–48 base64
 	// chars (e.g. sec-c-OTYxNTQ2NjctNzAzMi00YzQxLWExMGItMGQ0YTgxM2VlMzc3 decodes to a
@@ -667,8 +683,9 @@ var patterns = []Pattern{
 		MatchGroup: 1,
 	},
 	{
+		// require a real token length; bare `EAAJj+` FPs on any string beginning EAAJj
 		Name:     "Instagram Graph API Token (EAAJj...)",
-		Regex:    regexp.MustCompile(`EAAJj[A-Za-z0-9]+`),
+		Regex:    regexp.MustCompile(`\bEAAJj[A-Za-z0-9]{40,}\b`),
 		Severity: SevHigh,
 	},
 	// ─── CI/CD ────────────────────────────────────────────────────────────────────
@@ -1792,8 +1809,9 @@ var patterns = []Pattern{
 		Severity: SevHigh,
 	},
 	{
+		// "pa-" is a very generic prefix; real Voyage keys are ~62 chars -> require 50+ to cut FP
 		Name:     "Voyage AI API Key (pa-)",
-		Regex:    regexp.MustCompile(`\bpa-[A-Za-z0-9_\-]{40,}\b`),
+		Regex:    regexp.MustCompile(`\bpa-[A-Za-z0-9_\-]{50,}\b`),
 		Severity: SevHigh,
 	},
 	{
@@ -1810,9 +1828,10 @@ var patterns = []Pattern{
 		Severity: SevHigh,
 	},
 	{
+		// site key is public by design (embedded in pages); mirror reCAPTCHA site key (LOW)
 		Name:     "Cloudflare Turnstile Site Key (0x4AAAA)",
 		Regex:    regexp.MustCompile(`\b0x4AAAA[A-Za-z0-9_\-]{30,}\b`),
-		Severity: SevMedium,
+		Severity: SevLow,
 	},
 
 	// ─── Meta ─────────────────────────────────────────────────────────────────
@@ -2013,6 +2032,18 @@ var patterns = []Pattern{
 		Name:     "Adyen API Key (AQE…)",
 		Regex:    regexp.MustCompile(`\bAQE[A-Za-z0-9+/=_\-]{60,140}\b`),
 		Severity: SevCritical,
+	},
+	{
+		Name:       "Binance API Key (context)",
+		Regex:      regexp.MustCompile(`(?i)binance[^"\n]{0,40}?(?:api[_\-\s]*)?(?:key|secret)["']?\s*[:=]\s*['"]?([A-Za-z0-9_\-]{16,64})['"]?`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Kraken API Key (context)",
+		Regex:      regexp.MustCompile(`(?i)kraken[^"\n]{0,40}?(?:api[_\-\s]*)?(?:key|secret|token)["']?\s*[:=]\s*['"]?([A-Za-z0-9+/=]{40,64})['"]?`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
 	},
 
 	// ─── Infra / hosting ──────────────────────────────────────────────────────
@@ -2366,5 +2397,6 @@ var patterns = []Pattern{
 		Severity:   SevMedium,
 		MatchGroup: 1,
 	},
+
 
 }
