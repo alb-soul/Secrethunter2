@@ -275,6 +275,11 @@ var patterns = []Pattern{
 		Regex:    regexp.MustCompile(`\bSK[a-f0-9]{32}\b`),
 		Severity: SevHigh,
 	},
+	{
+		Name:     "Twilio App SID",
+		Regex:    regexp.MustCompile(`\bAP[a-f0-9]{32}\b`),
+		Severity: SevHigh,
+	},
 
 	// ─── Mailgun ─────────────────────────────────────────────────────────────────
 	{

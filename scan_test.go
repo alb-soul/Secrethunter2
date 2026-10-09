@@ -222,6 +222,7 @@ func TestMoreFamilies(t *testing.T) {
 		{`bot_token=1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1`, "Telegram Bot API Token"},
 		{`twilio_auth_token = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"`, "Twilio Auth Token"},
 		{`sid=ACa1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6`, "Twilio Account SID"},
+	{`app_sid=APa1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6`, "Twilio App SID"},
 		{`SENDGRID_API_KEY=SG.AbCdEfGhIjKlMnOpQrStUv.abcdefghijklmnopqrstuvwxyz0123456789_X-Ab12`, "SendGrid API Key"},
 		{`sq0idp-AbCdEfGhIjKlMnOpQrStUvWx12`, ""}, // Square App ID format differs; just ensure no crash, may or may not fire
 		{`hvs.AbCdEfGhIjKlMnOpQrStUvWx12`, "Vault Service Token (hvs.)"},
