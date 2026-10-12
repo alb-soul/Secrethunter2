@@ -255,12 +255,17 @@ var patterns = []Pattern{
 	},
 	{
 		Name:     "Slack Bot Token (xoxb-)",
-		Regex:    regexp.MustCompile(`xoxb-[0-9]{10,13}-[0-9]{10,13}-[A-Za-z0-9]{24}`),
+		// BUGFIX 2026-10: Slack lengthening (docs resmi) — secret bisa 24/32/48+ char.
+		// Exact {24} menolak token era baru. Longgarkan ke {24,} (prefix khas, FP aman).
+		// + seksi numerik ketiga opsional: format modern 3-seksi
+		// (xoxb-A-B-C-SECRET, cth docs resmi) vs klasik 2-seksi (xoxb-A-B-SECRET).
+		Regex:    regexp.MustCompile(`xoxb-[0-9]{10,13}-[0-9]{10,13}-(?:[0-9]{10,13}-)?[A-Za-z0-9]{24,}`),
 		Severity: SevCritical,
 	},
 	{
 		Name:     "Slack User Token (xoxp-)",
-		Regex:    regexp.MustCompile(`xoxp-[0-9]{10,13}-[0-9]{10,13}-[0-9]{10,13}-[A-Za-z0-9]{32}`),
+		// Sama: secret xoxp modern 32, era-lengthened bisa lebih panjang.
+		Regex:    regexp.MustCompile(`xoxp-[0-9]{10,13}-[0-9]{10,13}-[0-9]{10,13}-[A-Za-z0-9]{32,}`),
 		Severity: SevCritical,
 	},
 	{
