@@ -32,6 +32,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -497,8 +499,299 @@ type patternCandidate struct {
 	endPos   int
 }
 
+// ─── Obfuscated-layer decode ──────────────────────────────────────────────
+// Bundle minified menyembunyikan secret di balik \x escapes, String.fromCharCode(),
+// blob base64, split "a"+"b", dan string reversed. decodedVariants mengembalikan
+// rewrite yg ekuivalen scr semantik; scanContent memindai tiap varian dan menggabung
+// temuan (dedupe by pattern+match, ditandai " (decoded)", Line=0).
+// Guard presisi: transformasi identik-kecuali-base64 (digate printable-ratio +
+// skip payload data:-URI); varian hanya dibangun bila sinyalnya ada; cap 2MB.
+var (
+	reHexEsc   = regexp.MustCompile(`\\x([0-9a-fA-F]{2})`)
+	reUniEsc   = regexp.MustCompile(`\\u([0-9a-fA-F]{4})`)
+	reCharCode = regexp.MustCompile(`String\.fromCharCode\(\s*([0-9][0-9\s,]*)\s*\)`)
+	reB64Blob  = regexp.MustCompile(`[A-Za-z0-9+/]{20,}={0,2}`)
+	reReversed = regexp.MustCompile(`"([^"\\\n]{16,})"\.split\(\s*""\s*\)\.reverse\(\)|'([^'\\\n]{16,})'\.split\(\s*''\s*\)\.reverse\(\)`)
+	reConcat   = regexp.MustCompile(`"([^"\\\n]*)"\s*\+\s*"([^"\\\n]*)"`)
+	reVarAssign = regexp.MustCompile(`(?:(?:var|let|const)\s+|,)([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*("([^"\\\n]{6,200})"|'([^'\\\n]{6,200})')`)
+)
+
+func unescapeJS(s string) string {
+	s = reHexEsc.ReplaceAllStringFunc(s, func(m string) string {
+		v, err := strconv.ParseUint(m[2:], 16, 8)
+		if err != nil {
+			return m
+		}
+		return string(rune(v))
+	})
+	return reUniEsc.ReplaceAllStringFunc(s, func(m string) string {
+		v, err := strconv.ParseUint(m[2:], 16, 16)
+		if err != nil || v >= 0xD800 && v <= 0xDFFF {
+			return m
+		}
+		return string(rune(v))
+	})
+}
+
+func evalCharCodes(s string) string {
+	return reCharCode.ReplaceAllStringFunc(s, func(m string) string {
+		open := strings.Index(m, "(")
+		inner := m[open+1 : len(m)-1]
+		parts := strings.Split(inner, ",")
+		if len(parts) < 6 || len(parts) > 300 {
+			return m
+		}
+		var b strings.Builder
+		for _, p := range parts {
+			n, err := strconv.Atoi(strings.TrimSpace(p))
+			if err != nil || n < 32 || n > 126 {
+				return m
+			}
+			b.WriteByte(byte(n))
+		}
+		return `"` + b.String() + `"`
+	})
+}
+
+func printableRatio(b []byte) float64 {
+	if len(b) == 0 {
+		return 0
+	}
+	ok := 0
+	for _, c := range b {
+		if c >= 32 && c <= 126 || c == '\n' || c == '\r' || c == '\t' {
+			ok++
+		}
+	}
+	return float64(ok) / float64(len(b))
+}
+
+func decodeB64Blobs(s string) string {
+	var out strings.Builder
+	rest := s
+	for {
+		loc := reB64Blob.FindStringIndex(rest)
+		if loc == nil {
+			out.WriteString(rest)
+			break
+		}
+		start, end := loc[0], loc[1]
+		// skip payload data:-URI (font/gambar/svg — biner atau markup, bukan secret)
+		if start >= 7 && rest[start-7:start] == "base64," {
+			out.WriteString(rest[:end])
+			rest = rest[end:]
+			continue
+		}
+		blob := rest[start:end]
+		raw, err := base64.StdEncoding.DecodeString(blob)
+		if err != nil {
+			raw, err = base64.RawStdEncoding.DecodeString(blob)
+		}
+		if err != nil || len(raw) < 8 || printableRatio(raw) < 0.7 {
+			out.WriteString(rest[:end])
+			rest = rest[end:]
+			continue
+		}
+		out.WriteString(rest[:start])
+		out.WriteString(string(raw))
+		rest = rest[end:]
+	}
+	return out.String()
+}
+
+func evalReversed(s string) string {
+	// grup 1 = varian quote-ganda, grup 2 = quote-tunggal (satu selalu kosong).
+	// ReplaceAllString tak bisa membalik — pakai Func + reverse manual.
+	return reReversed.ReplaceAllStringFunc(s, func(m string) string {
+		sub := reReversed.FindStringSubmatch(m)
+		if sub == nil {
+			return m
+		}
+		r := []rune(sub[1] + sub[2])
+		if len(r) < 16 {
+			return m
+		}
+		for i, j := 0, len(r)-1; i < j; i, j = i+1, j-1 {
+			r[i], r[j] = r[j], r[i]
+		}
+		return `"` + string(r) + `"`
+	})
+}
+
+func joinConcat(s string) string {
+	for i := 0; i < 5; i++ {
+		n := reConcat.ReplaceAllString(s, `"$1$2"`)
+		if n == s {
+			break
+		}
+		s = n
+	}
+	return s
+}
+
+// propagateVars: one-hop constant propagation for minified JS.
+// `var n="LITERAL"` assigned EXACTLY once -> uses in value position
+// (: = ( [ ! before; not key/comparison after) get the literal inline.
+// Semantics-preserving (single assignment), so zero new FP class; unlocks
+// {apiKey:n} shapes and literals created by other decodes.
+func propagateVars(s string) string {
+	if !(strings.Contains(s, "var ") || strings.Contains(s, "let ") || strings.Contains(s, "const ")) {
+		return s
+	}
+	type decl struct {
+		name, lit string
+	}
+	var decls []decl
+	for _, loc := range reVarAssign.FindAllStringSubmatchIndex(s, -1) {
+		name := s[loc[2]:loc[3]]
+		lit := s[loc[4]:loc[5]]
+		if strings.Contains(lit, "\n") {
+			continue
+		}
+		decls = append(decls, decl{name, lit})
+	}
+	if len(decls) == 0 {
+		return s
+	}
+	wordRe := func(name string) *regexp.Regexp {
+		return regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`)
+	}
+	assignRe := func(name string) *regexp.Regexp {
+		return regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\s*=`)
+	}
+	cur := s
+	changed := false
+	for _, d := range decls {
+		wr := wordRe(d.name)
+		if len(wr.FindAllStringIndex(cur, -1)) != 2 {
+			continue // used 0x (dead) or >1x (unsafe) -> skip
+		}
+		uses := wr.FindAllStringIndex(cur, -1)
+		ar := assignRe(d.name)
+		useIdx := -1
+		declCount := 0
+		for i, u := range uses {
+			tail := cur[u[0]:]
+			if m := ar.FindStringIndex(tail); m != nil && m[0] == 0 {
+				after := tail[m[1]:]
+				if len(after) > 0 && (after[0] == '=' || after[0] == '>') {
+					continue // == / === / =>
+				}
+				declCount++
+				continue // this one is the declaration
+			}
+			if useIdx != -1 {
+				useIdx = -2
+				break
+			}
+			useIdx = i
+		}
+		if useIdx < 0 || declCount != 1 {
+			continue
+		}
+		u := uses[useIdx]
+		pi := u[0] - 1
+		for pi >= 0 && (cur[pi] == ' ' || cur[pi] == '\t' || cur[pi] == '\n' || cur[pi] == '\r') {
+			pi--
+		}
+		if pi < 0 {
+			continue
+		}
+		pc := cur[pi]
+		if pc != ':' && pc != '=' && pc != '(' && pc != '[' && pc != '!' {
+			continue
+		}
+		ni := u[1]
+		for ni < len(cur) && (cur[ni] == ' ' || cur[ni] == '\t' || cur[ni] == '\n' || cur[ni] == '\r') {
+			ni++
+		}
+		if ni < len(cur) && (cur[ni] == ':' || cur[ni] == '=' || cur[ni] == '(') {
+			continue
+		}
+		cur = cur[:u[0]] + d.lit + cur[u[1]:]
+		changed = true
+	}
+	if !changed {
+		return s
+	}
+	return cur
+}
+
+func decodedVariants(content string) []string {
+	if len(content) == 0 || len(content) > 2000000 {
+		return nil
+	}
+	var out []string
+	if strings.Contains(content, "\\x") || strings.Contains(content, "\\u") {
+		if v := unescapeJS(content); v != content {
+			out = append(out, v)
+		}
+	}
+	if strings.Contains(content, "fromCharCode") {
+		if v := evalCharCodes(content); v != content {
+			out = append(out, v)
+		}
+	}
+	if strings.Contains(content, "reverse()") {
+		if v := evalReversed(content); v != content {
+			out = append(out, v)
+		}
+	}
+	if strings.Contains(content, `+"`) || strings.Contains(content, `"+`) {
+		if v := joinConcat(content); v != content {
+			out = append(out, v)
+		}
+	}
+	if strings.Contains(content, "atob(") || reB64Blob.MatchString(content) {
+		if v := decodeB64Blobs(content); v != content {
+			out = append(out, v)
+		}
+	}
+	// propagasi konstanta: pada raw + pada tiap varian (literal hasil decode ikut ter-link).
+	// cth: var n=fromCharCode(..) + {key:n}; var e="ghp_"+".." + {token:e}.
+	if p := propagateVars(content); p != content {
+		out = append(out, p)
+	}
+	var linked []string
+	for _, v := range out {
+		if p := propagateVars(v); p != v {
+			linked = append(linked, p)
+		}
+	}
+	return append(out, linked...)
+}
+
 func scanContent(rawURL, content string) []Finding {
 	contentLower := strings.ToLower(content) // v3/v2: sekali, untuk prefilter
+	base := scanSingle(rawURL, content, contentLower)
+	vars := decodedVariants(content)
+	if len(vars) == 0 {
+		return base
+	}
+	seen := make(map[string]struct{}, len(base)*2+8)
+	for _, f := range base {
+		seen[f.Pattern+"\x00"+f.Match] = struct{}{}
+	}
+	out := base
+	for _, v := range vars {
+		for _, f := range scanSingle(rawURL, v, strings.ToLower(v)) {
+			if _, dup := seen[f.Pattern+"\x00"+f.Match]; dup {
+				continue
+			}
+			f.Pattern += " (decoded)"
+			f.Line = 0
+			k := f.Pattern + "\x00" + f.Match
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func scanSingle(rawURL, content, contentLower string) []Finding {
 	if len(content) >= parallelScanMinBytes && len(patterns) > 1 {
 		return scanContentPar(rawURL, content, contentLower)
 	}
@@ -1286,12 +1579,22 @@ func isPlaceholder(s string) bool {
 		"xxxx", "yyyy", "zzzz", "none", "undefined", "null",
 		"placeholder", "insert_", "insert-", "redacted", "dummy",
 		"sample", "lorem", "asdf", "qwerty", "abc123", "string",
-		"todo", "fixme", "xxx", "yyy", "zzz",
+		"todo", "fixme",
 	}
 	for _, p := range placeholders {
 		if strings.Contains(lower, p) {
 			return true
 		}
+	}
+	// BUGFIX leaktest-2026-10: fragmen pendek xxx/yyy/zzz sbg substring membunuh
+	// kunci ASLI yg kebetulan mengandungnya (mis. AKIA...ZZZZ...). Hanya anggap
+	// placeholder bila fragmen MENDOMINASI nilai (sisa non-fragmen < 8 char).
+	stripped := lower
+	for _, p := range []string{"xxx", "yyy", "zzz"} {
+		stripped = strings.ReplaceAll(stripped, p, "")
+	}
+	if stripped != lower && len(stripped) < 8 {
+		return true
 	}
 	if len(s) > 4 {
 		allSame := true

@@ -145,6 +145,13 @@ var patterns = []Pattern{
 		Severity:   SevMedium,
 		MatchGroup: 1,
 	},
+	{
+		// BUGFIX leaktest-2026-10: databaseURL (*.firebaseio.com) tanpa pola —
+		// URL-nya separuh temuan (open-rules = full-takeover), flag LOW agar triage terlihat.
+		Name:     "Firebase Realtime Database URL",
+		Regex:    regexp.MustCompile(`https://[A-Za-z0-9][A-Za-z0-9\-]*\.(?:firebaseio\.com|firebasedatabase\.app)/?`),
+		Severity: SevLow,
+	},
 
 	// ─── GitHub ──────────────────────────────────────────────────────────────────
 	{
@@ -231,6 +238,13 @@ var patterns = []Pattern{
 		Name:     "Stripe Webhook Secret",
 		Regex:    regexp.MustCompile(`whsec_[A-Za-z0-9]{32,64}`),
 		Severity: SevHigh,
+	},
+	{
+		// BUGFIX leaktest-2026-10: hanya sk_test/pk_live/rk_live/whsec yg ada;
+		// pk_test_/rk_test_ (publishable/restricted-test) lolos diam-diam.
+		Name:     "Stripe Test Publishable/Restricted Key",
+		Regex:    regexp.MustCompile(`(?:pk_test|rk_test)_[0-9A-Za-z]{10,}`),
+		Severity: SevMedium,
 	},
 
 	// ─── Slack ───────────────────────────────────────────────────────────────────
@@ -2359,7 +2373,7 @@ var patterns = []Pattern{
 	// "Forgot password?", "Enter your password", "Reset your password", etc.
 	{
 		Name:       "Generic Secret / Password in code",
-		Regex:      regexp.MustCompile(`(?i)(?:password|passwd|secret|private[_\-]?key|client[_\-]?secret|auth[_\-]?token|access[_\-]?token)["\']?\s*[=:]\s*['"]([A-Za-z0-9!@#$%^&*_\-.+][A-Za-z0-9!@#$%^&*_\-./+]{7,79})['"]`),
+		Regex:      regexp.MustCompile(`(?i)(?:password|passwd|secret(?:[_\-]?(?:access[_\-]?)?key)?|private[_\-]?key|client[_\-]?secret|auth[_\-]?token|access[_\-]?token)["\']?\s*[=:]\s*['"]([A-Za-z0-9!@#$%^&*_\-.+][A-Za-z0-9!@#$%^&*_\-./+]{7,79})['"]`),
 		Severity:   SevLow,
 		MatchGroup: 1,
 	},
@@ -2368,6 +2382,15 @@ var patterns = []Pattern{
 	{
 		Name:       "Generic API Key in code",
 		Regex:      regexp.MustCompile(`(?i)(?:api[_\-]?key|apikey|app[_\-]?key|appkey)["\']?\s*[=:]\s*['"]([A-Za-z0-9_\-]{10,80})['"]`),
+		Severity:   SevLow,
+		MatchGroup: 1,
+	},
+	{
+		// BUGFIX leaktest-2026-10: key pendek pass/pwd (SMTP, komentar admin) + separator ':'
+		// lolos dari Generic (daftar keyfaker). Batas kiri [^A-Za-z0-9] agar 'bypass'/'compass'
+		// tak ikut (tapi smtp_pass boleh); nilai wajib quote (presisi, cermin Generic).
+		Name:       "Password assignment (pass/pwd)",
+		Regex:      regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9])(?:pass|pwd)\s*[:=]\s*['"]([^'"\s]{6,64})['"]`),
 		Severity:   SevLow,
 		MatchGroup: 1,
 	},
@@ -2389,6 +2412,12 @@ var patterns = []Pattern{
 		Regex:      regexp.MustCompile(`(?i)(?:redper|enc(?:ryption)?[_\-]?(?:key|pass(?:word|phrase)?)|crypto[_\-]?key|secret[_\-]?key)["']?\s*[=:]\s*['"]([^'"\s]{6,64})['"]`),
 		Severity:   SevHigh,
 		MatchGroup: 1,
+	},
+	{
+		// BUGFIX leaktest-2026-10: xxxxx.apps.googleusercontent.com tanpa pola.
+		Name:     "Google OAuth Client ID",
+		Regex:    regexp.MustCompile(`\b[0-9]{10,14}-[A-Za-z0-9_\-]{16,}\.apps\.googleusercontent\.com\b`),
+		Severity: SevMedium,
 	},
 	{
 		// BUGFIX binus-2026-09: clientId AzureAD/MSAL (UUID kontekstual).
