@@ -227,6 +227,47 @@ var patterns = []Pattern{
 		MatchGroup: 1,
 	},
 
+	// ─── Stripe-style keys dari provider regional (audit 2026-10-25) ──────────
+	{
+		// Pagar.me: prefix identik Stripe (sk_live_/sk_test_) -> wajib konteks.
+		Name:       "Pagar.me Secret Key (context)",
+		Regex:      regexp.MustCompile(`(?i)pagar(?:\.?me)?[^\n]{0,40}?(sk_(?:live|test)_[A-Za-z0-9]{20,})`),
+		Severity:   SevCritical,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Pagar.me Public Key (context, public)",
+		Regex:      regexp.MustCompile(`(?i)pagar(?:\.?me)?[^\n]{0,40}?(pk_(?:live|test)_[A-Za-z0-9]{20,})`),
+		Severity:   SevInfo,
+		MatchGroup: 1,
+	},
+	{
+		// PayMongo: prefix identik Stripe (sk_live_/sk_test_) -> wajib konteks.
+		Name:       "PayMongo Secret Key (context)",
+		Regex:      regexp.MustCompile(`(?i)paymongo[^\n]{0,40}?(sk_(?:live|test)_[A-Za-z0-9]{20,})`),
+		Severity:   SevCritical,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "PayMongo Public Key (context, public)",
+		Regex:      regexp.MustCompile(`(?i)paymongo[^\n]{0,40}?(pk_(?:live|test)_[A-Za-z0-9]{20,})`),
+		Severity:   SevInfo,
+		MatchGroup: 1,
+	},
+	{
+		// Culqi: prefix identik Stripe (sk_live_/sk_test_) -> wajib konteks.
+		Name:       "Culqi Secret Key (context)",
+		Regex:      regexp.MustCompile(`(?i)culqi[^\n]{0,40}?(sk_(?:live|test)_[A-Za-z0-9]{20,})`),
+		Severity:   SevCritical,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Culqi Public Key (context, public)",
+		Regex:      regexp.MustCompile(`(?i)culqi[^\n]{0,40}?(pk_(?:live|test)_[A-Za-z0-9]{20,})`),
+		Severity:   SevInfo,
+		MatchGroup: 1,
+	},
+
 	// ─── Stripe ──────────────────────────────────────────────────────────────────
 	{
 		Name:     "Stripe Live Secret Key",
