@@ -1455,13 +1455,13 @@ var patterns = []Pattern{
 	// ─── Flutterwave ────────────────────────────────────────────────────────────
 	{
 		Name:     "Flutterwave Secret Key (FLWSECK...)",
-		Regex:    regexp.MustCompile(`\bFLWSECK(?:_TEST)?-[a-f0-9]{32}-X\b`),
+		Regex:    regexp.MustCompile(`\bFLWSECK(?:_TEST)?-[A-Za-z0-9]{15,}-X\b`),
 		Severity: SevCritical,
 	},
 	{
 		Name:     "Flutterwave Public Key (FLWPUBK...)",
-		Regex:    regexp.MustCompile(`\bFLWPUBK(?:_TEST)?-[a-f0-9]{32}-X\b`),
-		Severity: SevMedium,
+		Regex:    regexp.MustCompile(`\bFLWPUBK(?:_TEST)?-[A-Za-z0-9]{15,}-X\b`),
+		Severity: SevInfo,
 	},
 
 	// ─── AI providers (modern, prefixed) ────────────────────────────────────────
@@ -2419,6 +2419,39 @@ var patterns = []Pattern{
 		Name:     "AWS Session Token (IQoJ)",
 		Regex:    regexp.MustCompile(`\bIQoJ[A-Za-z0-9+/=]{80,}`),
 		Severity: SevHigh,
+	},
+
+	// ─── Regional fintech (audit 2026-10-25) ──────────────────────────────────
+	{
+		// Mercado Pago (LatAm): access token & public key sama-sama berprefix APP_USR-.
+		// Tidak bisa dibedakan dari prefix -> severity MEDIUM (kredensial pair).
+		Name:     "Mercado Pago Credential (APP_USR-)",
+		Regex:    regexp.MustCompile(`\bAPP_USR-[A-Za-z0-9\-]{20,}`),
+		Severity: SevMedium,
+	},
+	{
+		// Omise / Opn Payments (Thailand/SEA): skey_[test_] rahasia, pkey_[test_] publik.
+		// Docs: docs.omise.co/api-authentication
+		Name:     "Omise Secret Key",
+		Regex:    regexp.MustCompile(`\bskey_(?:test_)?[a-z0-9]{16,}\b`),
+		Severity: SevCritical,
+	},
+	{
+		Name:     "Omise Public Key (public)",
+		Regex:    regexp.MustCompile(`\bpkey_(?:test_)?[a-z0-9]{16,}\b`),
+		Severity: SevInfo,
+	},
+	{
+		// Toss Payments (Korea): secret test_sk_/live_sk_/test_gsk_/live_gsk_ ;
+		// client test_ck_/live_ck_ (publik). Docs: docs.tosspayments.com/en/api-guide
+		Name:     "Toss Payments Secret Key",
+		Regex:    regexp.MustCompile(`\b(?:test|live)_(?:sk|gsk)_[A-Za-z0-9]{20,}\b`),
+		Severity: SevCritical,
+	},
+	{
+		Name:     "Toss Payments Client Key (public)",
+		Regex:    regexp.MustCompile(`\b(?:test|live)_ck_[A-Za-z0-9]{20,}\b`),
+		Severity: SevInfo,
 	},
 
 	// ─── Generic Sensitive Patterns ───────────────────────────────────────────────
