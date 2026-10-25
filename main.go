@@ -245,14 +245,14 @@ func buildClient(cfg *Config) *http.Client {
 			return nil
 		},
 		Transport: &http.Transport{
-			Proxy:                  http.ProxyFromEnvironment,
-			MaxIdleConns:           512,
-			MaxIdleConnsPerHost:    perHost,
-			IdleConnTimeout:        90 * time.Second,
-			TLSHandshakeTimeout:    10 * time.Second,
-			ResponseHeaderTimeout:  25 * time.Second,
-			ExpectContinueTimeout:  1 * time.Second,
-			ForceAttemptHTTP2:      true,
+			Proxy:                 http.ProxyFromEnvironment,
+			MaxIdleConns:          512,
+			MaxIdleConnsPerHost:   perHost,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 25 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			ForceAttemptHTTP2:     true,
 		},
 	}
 }
@@ -464,6 +464,8 @@ func (li *lineIndex) lineTextOf(content string, n int) string {
 var noPublicGlobal bool
 var publicByDesign = map[string]bool{
 	"Stripe Live Publishable Key":                true,
+	"Midtrans Client Key (public)":               true,
+	"Langfuse Public Key (public)":               true,
 	"Clerk Publishable Key (pk_live_/pk_test_)":  true,
 	"PubNub Subscribe Key":                       true,
 	"Google reCAPTCHA Site Key":                  true,
@@ -507,12 +509,12 @@ type patternCandidate struct {
 // Guard presisi: transformasi identik-kecuali-base64 (digate printable-ratio +
 // skip payload data:-URI); varian hanya dibangun bila sinyalnya ada; cap 2MB.
 var (
-	reHexEsc   = regexp.MustCompile(`\\x([0-9a-fA-F]{2})`)
-	reUniEsc   = regexp.MustCompile(`\\u([0-9a-fA-F]{4})`)
-	reCharCode = regexp.MustCompile(`String\.fromCharCode\(\s*([0-9][0-9\s,]*)\s*\)`)
-	reB64Blob  = regexp.MustCompile(`[A-Za-z0-9+/]{20,}={0,2}`)
-	reReversed = regexp.MustCompile(`"([^"\\\n]{16,})"\.split\(\s*""\s*\)\.reverse\(\)|'([^'\\\n]{16,})'\.split\(\s*''\s*\)\.reverse\(\)`)
-	reConcat   = regexp.MustCompile(`"([^"\\\n]*)"\s*\+\s*"([^"\\\n]*)"`)
+	reHexEsc    = regexp.MustCompile(`\\x([0-9a-fA-F]{2})`)
+	reUniEsc    = regexp.MustCompile(`\\u([0-9a-fA-F]{4})`)
+	reCharCode  = regexp.MustCompile(`String\.fromCharCode\(\s*([0-9][0-9\s,]*)\s*\)`)
+	reB64Blob   = regexp.MustCompile(`[A-Za-z0-9+/]{20,}={0,2}`)
+	reReversed  = regexp.MustCompile(`"([^"\\\n]{16,})"\.split\(\s*""\s*\)\.reverse\(\)|'([^'\\\n]{16,})'\.split\(\s*''\s*\)\.reverse\(\)`)
+	reConcat    = regexp.MustCompile(`"([^"\\\n]*)"\s*\+\s*"([^"\\\n]*)"`)
 	reVarAssign = regexp.MustCompile(`(?:(?:var|let|const)\s+|,)([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*("([^"\\\n]{6,200})"|'([^'\\\n]{6,200})')`)
 )
 
@@ -1162,22 +1164,20 @@ var standaloneTokenPatterns = map[string]bool{
 	"PayPal / Braintree Access Token":                  true,
 	"HubSpot Private App Token":                        true,
 	"Discord Bot Token":                                true,
-	"Google Cloud Service Account (type field)":         true,
-	"Supabase Service Role Key":                         true,
-	"Slack Webhook URL":                                 true,
-	"Mailchimp API Key":                                 true,
-	"Telegram Bot API Token":                            true,
-	"Microsoft Teams Webhook":                           true,
-	"Azure SAS Token":                                   true,
-	"Asana Personal Access Token":                       true,
-	"Cloudinary URL":                                    true,
-	"Grafana Cloud Access Policy Token (glc_)":          true,
-	"Amazon MWS Auth Token":                             true,
-	"Ghost Admin API Key (id:secret)":                   true,
-	"DeepL API Key (free :fx)":                          true,
-	"Honeybadger API Key (hbp_)":                        true,
-
-
+	"Google Cloud Service Account (type field)":        true,
+	"Supabase Service Role Key":                        true,
+	"Slack Webhook URL":                                true,
+	"Mailchimp API Key":                                true,
+	"Telegram Bot API Token":                           true,
+	"Microsoft Teams Webhook":                          true,
+	"Azure SAS Token":                                  true,
+	"Asana Personal Access Token":                      true,
+	"Cloudinary URL":                                   true,
+	"Grafana Cloud Access Policy Token (glc_)":         true,
+	"Amazon MWS Auth Token":                            true,
+	"Ghost Admin API Key (id:secret)":                  true,
+	"DeepL API Key (free :fx)":                         true,
+	"Honeybadger API Key (hbp_)":                       true,
 }
 
 // isBase64Slice reports whether the match at [startPos,endPos) is a slice of a
@@ -1213,7 +1213,7 @@ func isBase64Slice(content string, startPos, endPos int) bool {
 
 // humanCredPatterns marks pattern names that need extra anti-FP checks.
 var humanCredPatterns = map[string]bool{
-	"HTML comment credentials (user:pass)":              true,
+	"HTML comment credentials (user:pass)":               true,
 	"JS/line comment credentials (user:pass)":            true,
 	"Block comment credentials (user:pass)":              true,
 	"Freeform credentials near keyword (user:pass)":      true,

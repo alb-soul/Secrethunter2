@@ -60,7 +60,6 @@ var patterns = []Pattern{
 		MatchGroup: 1,
 	},
 
-
 	// ─── Private / Certificate Keys ─────────────────────────────────────────────
 	{
 		Name:     "RSA Private Key",
@@ -254,7 +253,7 @@ var patterns = []Pattern{
 		Severity: SevHigh,
 	},
 	{
-		Name:     "Slack Bot Token (xoxb-)",
+		Name: "Slack Bot Token (xoxb-)",
 		// BUGFIX 2026-10: Slack lengthening (docs resmi) — secret bisa 24/32/48+ char.
 		// Exact {24} menolak token era baru. Longgarkan ke {24,} (prefix khas, FP aman).
 		// + seksi numerik ketiga opsional: format modern 3-seksi
@@ -263,7 +262,7 @@ var patterns = []Pattern{
 		Severity: SevCritical,
 	},
 	{
-		Name:     "Slack User Token (xoxp-)",
+		Name: "Slack User Token (xoxp-)",
 		// Sama: secret xoxp modern 32, era-lengthened bisa lebih panjang.
 		Regex:    regexp.MustCompile(`xoxp-[0-9]{10,13}-[0-9]{10,13}-[0-9]{10,13}-[A-Za-z0-9]{32,}`),
 		Severity: SevCritical,
@@ -489,9 +488,9 @@ var patterns = []Pattern{
 		Severity: SevHigh,
 	},
 	{
-		Name:       "Azure Connection String",
-		Regex:      regexp.MustCompile(`(?i)DefaultEndpointsProtocol=https?;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/]{86}==`),
-		Severity:   SevCritical,
+		Name:     "Azure Connection String",
+		Regex:    regexp.MustCompile(`(?i)DefaultEndpointsProtocol=https?;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/]{86}==`),
+		Severity: SevCritical,
 	},
 
 	// ─── AI / ML APIs ─────────────────────────────────────────────────────────────
@@ -781,9 +780,9 @@ var patterns = []Pattern{
 		Severity: SevHigh,
 	},
 	{
-		Name:     "Airtable API Key (legacy)",
-		Regex:    regexp.MustCompile(`(?i)airtable[_\-\s]*(?:api[_\-\s]*)?key["\']?\s*[=:]\s*['"]?(key[A-Za-z0-9]{14})['"]?`),
-		Severity: SevMedium,
+		Name:       "Airtable API Key (legacy)",
+		Regex:      regexp.MustCompile(`(?i)airtable[_\-\s]*(?:api[_\-\s]*)?key["\']?\s*[=:]\s*['"]?(key[A-Za-z0-9]{14})['"]?`),
+		Severity:   SevMedium,
 		MatchGroup: 1,
 	},
 	{
@@ -809,9 +808,9 @@ var patterns = []Pattern{
 		Severity: SevHigh,
 	},
 	{
-		Name:     "Cloudflare API Token",
-		Regex:    regexp.MustCompile(`(?i)(?:cf|cloudflare)[_\-\s]*(?:api[_\-\s]*)?token["\']?\s*[=:]\s*['"]?([A-Za-z0-9_\-]{40})['"]?`),
-		Severity: SevCritical,
+		Name:       "Cloudflare API Token",
+		Regex:      regexp.MustCompile(`(?i)(?:cf|cloudflare)[_\-\s]*(?:api[_\-\s]*)?token["\']?\s*[=:]\s*['"]?([A-Za-z0-9_\-]{40})['"]?`),
+		Severity:   SevCritical,
 		MatchGroup: 1,
 	},
 	{
@@ -821,9 +820,9 @@ var patterns = []Pattern{
 		MatchGroup: 1,
 	},
 	{
-		Name:     "Infura Project ID / Secret",
-		Regex:    regexp.MustCompile(`(?i)infura[_\-\s]*(?:project[_\-\s]*)?(?:id|secret)["\']?\s*[=:]\s*['"]?([a-f0-9]{32})['"]?`),
-		Severity: SevHigh,
+		Name:       "Infura Project ID / Secret",
+		Regex:      regexp.MustCompile(`(?i)infura[_\-\s]*(?:project[_\-\s]*)?(?:id|secret)["\']?\s*[=:]\s*['"]?([a-f0-9]{32})['"]?`),
+		Severity:   SevHigh,
 		MatchGroup: 1,
 	},
 	{
@@ -1005,9 +1004,9 @@ var patterns = []Pattern{
 
 	// ─── Vercel ──────────────────────────────────────────────────────────────────
 	{
-		Name:     "Vercel Access Token",
-		Regex:    regexp.MustCompile(`(?i)vercel[_\-\s]*(?:access[_\-\s]*)?token["\']?\s*[=:]\s*['"]?([A-Za-z0-9]{24})['"]?`),
-		Severity: SevHigh,
+		Name:       "Vercel Access Token",
+		Regex:      regexp.MustCompile(`(?i)vercel[_\-\s]*(?:access[_\-\s]*)?token["\']?\s*[=:]\s*['"]?([A-Za-z0-9]{24})['"]?`),
+		Severity:   SevHigh,
 		MatchGroup: 1,
 	},
 
@@ -1792,7 +1791,6 @@ var patterns = []Pattern{
 		MatchGroup: 1,
 	},
 
-
 	// ════════════════════════════════════════════════════════════════════════════
 	// NEW SERVICES — BATCH 4 (verified against official docs, 2026)
 	// ════════════════════════════════════════════════════════════════════════════
@@ -1905,7 +1903,6 @@ var patterns = []Pattern{
 		Severity:   SevHigh,
 		MatchGroup: 1,
 	},
-
 
 	// ════════════════════════════════════════════════════════════════════════════
 	// HUMAN / LEFTOVER CREDENTIALS  (v2.1.1 — tightened vs minified-JS FP)
@@ -2134,9 +2131,9 @@ var patterns = []Pattern{
 		MatchGroup: 1,
 	},
 	{
-		Name:       "DeepL API Key (free :fx)",
-		Regex:      regexp.MustCompile(`\b[0-9a-f]{32}:fx\b`),
-		Severity:   SevHigh,
+		Name:     "DeepL API Key (free :fx)",
+		Regex:    regexp.MustCompile(`\b[0-9a-f]{32}:fx\b`),
+		Severity: SevHigh,
 	},
 	{
 		Name:       "DeepL API Key (context)",
@@ -2234,7 +2231,6 @@ var patterns = []Pattern{
 		MatchGroup: 1,
 	},
 
-
 	// ════════════════════════════════════════════════════════════════════════════
 	// NEW SERVICES — BATCH 6 (verified active 2026, context-based, FP-safe)
 	// Keep legacy patterns; only ADD. Most use keyword + value capture.
@@ -2291,9 +2287,9 @@ var patterns = []Pattern{
 
 	// ─── AI / GPU active 2025-2026 ────────────────────────────────────────────
 	{
-		Name:       "Fal.ai API Key (key_id:sk_live_...)",
-		Regex:      regexp.MustCompile(`\b[a-z0-9]{6,16}:sk_live_[A-Za-z0-9]{16,}\b`),
-		Severity:   SevHigh,
+		Name:     "Fal.ai API Key (key_id:sk_live_...)",
+		Regex:    regexp.MustCompile(`\b[a-z0-9]{6,16}:sk_live_[A-Za-z0-9]{16,}\b`),
+		Severity: SevHigh,
 	},
 	{
 		Name:     "RunPod API Key (rpa_)",
@@ -2366,12 +2362,64 @@ var patterns = []Pattern{
 		Severity:   SevMedium,
 		MatchGroup: 1,
 	},
-		{
-		Name:       "Cloudflare R2 S3 URL (r2.cloudflarestorage.com)",
-		Regex:      regexp.MustCompile(`https?://[a-z0-9.\-]+\.r2\.cloudflarestorage\.com`),
-		Severity:   SevLow,
+	{
+		Name:     "Cloudflare R2 S3 URL (r2.cloudflarestorage.com)",
+		Regex:    regexp.MustCompile(`https?://[a-z0-9.\-]+\.r2\.cloudflarestorage\.com`),
+		Severity: SevLow,
 	},
 
+	// ─── Fintech Indonesia + SaaS (audit 2026-10-25) ──────────────────────────
+	{
+		// Midtrans Server Key = rahasia (dipakai sebagai Basic-auth username).
+		// Sandbox berprefix SB-Mid-server-, production Mid-server-.
+		// Docs: docs.midtrans.com/reference/authorization
+		Name:     "Midtrans Server Key",
+		Regex:    regexp.MustCompile(`\b(?:SB-Mid-server|Mid-server)-[A-Za-z0-9_\-]{10,}\b`),
+		Severity: SevCritical,
+	},
+	{
+		// Client Key dipakai di browser (Snap.js) -> publik by design.
+		Name:     "Midtrans Client Key (public)",
+		Regex:    regexp.MustCompile(`\b(?:SB-Mid-client|Mid-client)-[A-Za-z0-9_\-]{10,}\b`),
+		Severity: SevInfo,
+	},
+	{
+		// Xendit Secret API Key (Basic-auth username). Contoh resmi memuat + / =.
+		// Docs: docs.xendit.co/docs/api-keys
+		Name:     "Xendit Secret API Key",
+		Regex:    regexp.MustCompile(`\bxnd_(?:development|production)_[A-Za-z0-9+/=]{20,}`),
+		Severity: SevCritical,
+	},
+	{
+		// WooCommerce REST API: ck_ = consumer key, cs_ = consumer secret (40 hex).
+		Name:     "WooCommerce API Key (ck_/cs_)",
+		Regex:    regexp.MustCompile(`\b(?:ck|cs)_[a-f0-9]{40}\b`),
+		Severity: SevHigh,
+	},
+	{
+		// Langfuse: sk-lf-<uuid> rahasia; pk-lf-<uuid> publik.
+		// Ref: langfuse/packages/shared/src/server/auth/apiKeys.ts (randomUUID)
+		Name:     "Langfuse Secret Key",
+		Regex:    regexp.MustCompile(`\bsk-lf-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`),
+		Severity: SevHigh,
+	},
+	{
+		Name:     "Langfuse Public Key (public)",
+		Regex:    regexp.MustCompile(`\bpk-lf-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`),
+		Severity: SevInfo,
+	},
+	{
+		// NuGet API key: prefix 'oy2' + 43 char.
+		Name:     "NuGet API Key (oy2)",
+		Regex:    regexp.MustCompile(`\boy2[a-z0-9]{43}\b`),
+		Severity: SevHigh,
+	},
+	{
+		// AWS STS session token (hanya berguna bersama access key, tapi indikator bocor).
+		Name:     "AWS Session Token (IQoJ)",
+		Regex:    regexp.MustCompile(`\bIQoJ[A-Za-z0-9+/=]{80,}`),
+		Severity: SevHigh,
+	},
 
 	// ─── Generic Sensitive Patterns ───────────────────────────────────────────────
 	// Restrict value to non-space chars only — prevents matching UI strings like
@@ -2431,6 +2479,4 @@ var patterns = []Pattern{
 		Severity:   SevMedium,
 		MatchGroup: 1,
 	},
-
-
 }
