@@ -1,6 +1,6 @@
 # secrethunter2
 
-**Secret & Credential Scanner for Bug Bounty Recon** — detects 390+ token/credential patterns across web responses and local files.
+**Secret & Credential Scanner for Bug Bounty Recon** — detects 395+ token/credential patterns across web responses and local files.
 
 ```
  _____                     _   _   _             _
@@ -13,7 +13,7 @@
 
 ## Features
 
-- **390 verified patterns** — AWS, GCP, Azure, OpenAI, Anthropic, NVIDIA, Alibaba, Tencent, Discord, Slack, Stripe, JWT, private keys, DBURIs, and 100+ more
+- **395 verified patterns** — AWS, GCP, Azure, OpenAI, Anthropic, NVIDIA, Alibaba, Tencent, Discord, Slack, Stripe, JWT, private keys, DBURIs, and 100+ more
 - **AI-era tokens** — Cerebras, Voyage, Groq, Perplexity, xAI, OpenRouter, DeepSeek, Fireworks, Replicate, HuggingFace
 - **Parallel scanning** — automatic 8-worker regex dispatch for bodies >1MB
 - **Body-reuse mode** — scan `httpx -json -irr` output without re-fetching (`--httpx-json`)
@@ -38,7 +38,7 @@
 | **Database** | MongoDB, PostgreSQL, MySQL, Redis, SMTP, Oracle JDBC, generic credential URIs, .pgpass, .netrc |
 | **SSH/Keys** | RSA, EC, OpenSSH, DSA, PKCS8, PGP, PuTTY PPK |
 
-Full 390-pattern list: see `patterns.go`.
+Full 395-pattern list: see `patterns.go`.
 
 ## Installation
 

@@ -212,6 +212,21 @@ var patterns = []Pattern{
 		Severity: SevHigh,
 	},
 
+	{
+		// Paystack (Nigeria/Afrika): prefix identik Stripe -> wajib konteks "paystack"
+		// dalam baris yang sama (hindari salah label / FP).
+		Name:       "Paystack Secret Key (context)",
+		Regex:      regexp.MustCompile(`(?i)paystack[^\n]{0,40}?(sk_(?:live|test)_[A-Za-z0-9]{20,})`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
+	},
+	{
+		Name:       "Paystack Public Key (context, public)",
+		Regex:      regexp.MustCompile(`(?i)paystack[^\n]{0,40}?(pk_(?:live|test)_[A-Za-z0-9]{20,})`),
+		Severity:   SevInfo,
+		MatchGroup: 1,
+	},
+
 	// ─── Stripe ──────────────────────────────────────────────────────────────────
 	{
 		Name:     "Stripe Live Secret Key",
@@ -2454,6 +2469,24 @@ var patterns = []Pattern{
 		Severity: SevInfo,
 	},
 
+	// ─── Regional fintech ronde-2 (audit 2026-10-25) ──────────────────────────
+	{
+		// Wompi (Kolombia, Bancolombia): prv_ = private (server), pub_ = public.
+		// Docs: docs.wompi.co/en/docs/colombia/ambientes-y-llaves/
+		Name:     "Wompi Private Key",
+		Regex:    regexp.MustCompile(`\bprv_(?:test|prod)_[A-Za-z0-9]{20,}\b`),
+		Severity: SevCritical,
+	},
+	{
+		Name:     "Wompi Integrity/Events Secret",
+		Regex:    regexp.MustCompile(`\b(?:test|prod)_(?:integrity|events)_[A-Za-z0-9]{20,}\b`),
+		Severity: SevHigh,
+	},
+	{
+		Name:     "Wompi Public Key (public)",
+		Regex:    regexp.MustCompile(`\bpub_(?:test|prod)_[A-Za-z0-9]{20,}\b`),
+		Severity: SevInfo,
+	},
 	// ─── Generic Sensitive Patterns ───────────────────────────────────────────────
 	// Restrict value to non-space chars only — prevents matching UI strings like
 	// "Forgot password?", "Enter your password", "Reset your password", etc.
