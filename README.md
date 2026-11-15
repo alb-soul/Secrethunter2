@@ -1,6 +1,6 @@
 # secrethunter2
 
-**Secret & Credential Scanner for Bug Bounty Recon** — detects 401+ token/credential patterns across web responses and local files.
+**Secret & Credential Scanner for Bug Bounty Recon** — detects 448 token/credential patterns across web responses, JS bundles, and local files.
 
 ```
  _____                     _   _   _             _
@@ -13,9 +13,14 @@
 
 ## Features
 
-- **401 verified patterns** — AWS, GCP, Azure, OpenAI, Anthropic, NVIDIA, Alibaba, Tencent, Discord, Slack, Stripe, JWT, private keys, DBURIs, and 100+ more
+- **448 verified patterns** — AWS, GCP, Azure, OpenAI, Anthropic, NVIDIA, Alibaba, Tencent, Discord, Slack, Stripe, JWT, private keys, DBURIs, and 150+ more
+- **JS bundle follower** (`--js-crawl N`) — follow same-host `<script src>` and scan the bundles where frontend secrets actually live
+- **Obfuscated-layer decode** — `\x`/`\u` escapes, `String.fromCharCode`, base64 blobs, `"a"+"b"` concat, reversed strings, one-hop constant propagation
+- **AST-derived literal gate** — setiap pola diberi daftar literal wajib (AND/OR) dari AST regexp, jadi regex mahal hanya dijalankan bila literalnya ada (±4× lebih cepat, tanpa kehilangan temuan)
 - **AI-era tokens** — Cerebras, Voyage, Groq, Perplexity, xAI, OpenRouter, DeepSeek, Fireworks, Replicate, HuggingFace
 - **Parallel scanning** — automatic 8-worker regex dispatch for bodies >1MB
+- **Evidence-safe output** — `-o` menulis berkas mode `0600` tanpa escape ANSI (aman di-grep, tidak membocorkan warna)
+- **CI/pipeline friendly** — `--min-severity` dan `--fail-on-findings` (exit 2)
 - **Body-reuse mode** — scan `httpx -json -irr` output without re-fetching (`--httpx-json`)
 - **Keyword prefilter** — cheap literal gate before expensive regex, derived conservatively from each pattern
 - **FlareSolverr integration** — Cloudflare bypass with automatic cookie refresh on `403/429`
@@ -38,7 +43,7 @@
 | **Database** | MongoDB, PostgreSQL, MySQL, Redis, SMTP, Oracle JDBC, generic credential URIs, .pgpass, .netrc |
 | **SSH/Keys** | RSA, EC, OpenSSH, DSA, PKCS8, PGP, PuTTY PPK |
 
-Full 401-pattern list: see `patterns.go`.
+Full list: `patterns.go` (401 pola inti) + `patterns_extra.go` (47 pola hasil audit 2026-11).
 
 ## Installation
 
@@ -73,6 +78,15 @@ go build -o secrethunter2 .
 
 # Skip public-by-design keys (RUM tokens, publishable keys, etc.)
 ./secrethunter2 -l urls.txt --no-public
+
+# Follow the page's own JS bundles (this is where frontend secrets live)
+./secrethunter2 -u https://app.target.com --js-crawl 20
+
+# Authenticated scan using your own test-account cookie
+./secrethunter2 -l urls.txt --cookie "session=abc123" -H "X-CSRF: token"
+
+# CI gate: fail the pipeline when a secret shows up
+./secrethunter2 -D ./dist --min-severity high --fail-on-findings
 ```
 
 ## Flags
@@ -101,6 +115,13 @@ go build -o secrethunter2 .
 | `-v` | `--verbose` | Show errors & progress | false |
 | `--no-color` | — | Disable ANSI color codes | false |
 | `--no-public` | — | Skip public-by-design keys | false |
+| `--min-severity` | — | Only emit findings at/above: critical, high, medium, low, info | all |
+| `--fail-on-findings` | — | Exit code 2 when any finding is emitted (CI) | false |
+| `-k` | `--insecure` | Skip TLS certificate verification | false |
+| `--proxy` | — | Explicit proxy URL (default: HTTP(S)_PROXY env) | env |
+| `--cookie` | — | Cookie `name=value` sent with every request (repeatable) | — |
+| `--js-crawl` | — | Follow up to N same-host `<script src>` and scan them | 0 (off) |
+| `--no-decode` | — | Disable obfuscated-layer decode pass (±5× faster) | false |
 | `--version` | — | Print version and exit | — |
 
 ## Severity Levels
@@ -130,6 +151,20 @@ docker run -d --name flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr
 cat subdomains.txt | httpx -json -irr -o httpx.json
 ./secrethunter2 --httpx-json httpx.json --scope target.com --json > findings.json
 ```
+
+## Performance (audit 2026-11)
+
+Ukur di WSL Arch (8 core), korpus JS nyata:
+
+| Target | Sebelum | Sesudah | Catatan |
+|---|---|---|---|
+| 2.2 MB bundle JS (3 file) | 121 s | 31 s | gate literal + `propagateVars` single-pass |
+| 2.2 MB, `--no-decode` | — | 6 s | lewati layer decode |
+| 610 KB bundle JS | 70 s | 19 s | findings identik |
+| 20 MB single-line blob | 48 s | 19 s | |
+
+Bottleneck yang tersisa adalah 6 lintasan penuh (body asli + 5 varian decode) × 448
+regex. Rekomendasi lanjutan ada di `AUDIT.md` (windowed matching per literal).
 
 ## License
 

@@ -22,6 +22,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -33,6 +34,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"regexp/syntax"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,7 +44,7 @@ import (
 )
 
 const (
-	version   = "2.3.3"
+	version   = "2.4.0"
 	defaultUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 	maxBodyMB = 10
 	banner    = `
@@ -90,6 +93,32 @@ type Config struct {
 	Files         []string
 	HTTPXJSON     string // v2: file JSONL dari httpx -json -irr
 	Scope         string // v2: batasi scan ke domain/subdomain ini
+
+	// ─── v3.1 (audit 2026-11) ───
+	MinSeverity    string   // "" = semua; buang finding di bawah level ini
+	FailOnFindings bool     // exit 2 bila ada finding (integrasi CI/pipeline)
+	Insecure       bool     // -k: lewati verifikasi sertifikat TLS
+	ProxyURL       string   // --proxy eksplisit (default: env HTTP(S)_PROXY)
+	Cookies        []string // --cookie name=value (repeatable)
+	NoDecode       bool     // matikan layer decode/obfuscation (perf)
+	JSCrawl        int      // --js-crawl: ikuti <script src> di HTML (maks N, 0=off)
+}
+
+// sevRank dipakai untuk filter --min-severity.
+var sevRank = map[string]int{
+	SevCritical: 5,
+	SevHigh:     4,
+	SevMedium:   3,
+	SevLow:      2,
+	SevInfo:     1,
+}
+
+// severityAtLeast melaporkan apakah sev >= min (min kosong = selalu lolos).
+func severityAtLeast(min, sev string) bool {
+	if min == "" {
+		return true
+	}
+	return sevRank[sev] >= sevRank[min]
 }
 
 // ─── Finding ──────────────────────────────────────────────────────────────────
@@ -197,7 +226,7 @@ func solveDomain(cfg *Config, domain string) *FSSession {
 		return nil
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := httpClient.Do(req)
+	resp, err := fsClient.Do(req)
 	if err != nil {
 		logVerbose(cfg, "[FS] Error solving %s: %v", domain, err)
 		return nil
@@ -231,10 +260,58 @@ func solveDomain(cfg *Config, domain string) *FSSession {
 // httpClient dibagi (keep-alive per-host). Diinisialisasi di main().
 var httpClient *http.Client
 
+// fsClient: klien khusus FlareSolverr. Timeout-nya HARUS lebih besar dari
+// maxTimeout request FS (60s) — sebelumnya solve selalu di-kill oleh timeout
+// 30s milik httpClient (audit 2026-11).
+var fsClient *http.Client
+
+// withScheme menambahkan https:// bila URL belum punya skema. Output recon
+// (subfinder / httpx tanpa -full) sering berupa domain telanjang.
+func withScheme(rawURL string) string {
+	s := strings.TrimSpace(rawURL)
+	if s == "" || strings.Contains(s, "://") {
+		return s
+	}
+	if strings.HasPrefix(s, "//") {
+		return "https:" + s
+	}
+	if strings.HasPrefix(s, "localhost") || strings.HasPrefix(s, "127.0.0.1") ||
+		strings.HasPrefix(s, "[::1]") || strings.HasPrefix(s, "0.0.0.0") {
+		return "http://" + s
+	}
+	return "https://" + s
+}
+
+// ansiStripper menulis ke file tanpa escape code ANSI, supaya -o menghasilkan
+// teks bersih yang bisa di-grep/di-parse (audit 2026-11).
+type ansiStripper struct{ w io.Writer }
+
+var reANSI = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+func (a ansiStripper) Write(p []byte) (int, error) {
+	if bytes.IndexByte(p, 0x1b) < 0 {
+		return a.w.Write(p)
+	}
+	if _, err := a.w.Write(reANSI.ReplaceAll(p, nil)); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
 func buildClient(cfg *Config) *http.Client {
 	perHost := cfg.Threads + 10
 	if perHost > 256 {
 		perHost = 256
+	}
+	tlsCfg := &tls.Config{}
+	if cfg.Insecure {
+		tlsCfg.InsecureSkipVerify = true // #nosec G402 — opt-in via -k untuk target cert rusak
+	}
+	proxyFn := http.ProxyFromEnvironment
+	if cfg.ProxyURL != "" {
+		if pu, perr := url.Parse(cfg.ProxyURL); perr == nil {
+			proxyFn = http.ProxyURL(pu)
+		}
 	}
 	return &http.Client{
 		Timeout: time.Duration(cfg.Timeout) * time.Second,
@@ -245,7 +322,8 @@ func buildClient(cfg *Config) *http.Client {
 			return nil
 		},
 		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
+			TLSClientConfig:       tlsCfg,
+			Proxy:                 proxyFn,
 			MaxIdleConns:          512,
 			MaxIdleConnsPerHost:   perHost,
 			IdleConnTimeout:       90 * time.Second,
@@ -258,6 +336,7 @@ func buildClient(cfg *Config) *http.Client {
 }
 
 func fetchURL(cfg *Config, rawURL string, fsCache *FSCache) (string, error) {
+	rawURL = withScheme(rawURL)
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return "", fmt.Errorf("invalid URL: %w", err)
@@ -285,6 +364,14 @@ func fetchURL(cfg *Config, rawURL string, fsCache *FSCache) (string, error) {
 		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 		if cookie != "" {
 			req.Header.Set("Cookie", cookie)
+		}
+		if len(cfg.Cookies) > 0 {
+			// gabungkan --cookie dengan cookie FlareSolverr (nama sama: terakhir menang)
+			merged := strings.Join(cfg.Cookies, "; ")
+			if cookie != "" {
+				merged = cookie + "; " + merged
+			}
+			req.Header.Set("Cookie", merged)
 		}
 		for _, h := range cfg.ExtraHeaders {
 			parts := strings.SplitN(h, ":", 2)
@@ -321,6 +408,12 @@ func fetchURL(cfg *Config, rawURL string, fsCache *FSCache) (string, error) {
 		}
 		if int64(len(data)) >= cfg.MaxBodyBytes {
 			logVerbose(cfg, "[!] %s body kena cap %d MB — mungkin terpotong", rawURL, cfg.MaxBodyBytes/(1024*1024))
+		}
+		// v3.1: body biner (NUL byte / mayoritas non-printable) tidak mungkin
+		// berisi secret tekstual — skip supaya tidak buang CPU & memicu FP.
+		if len(data) > 0 && (bytes.IndexByte(data, 0) >= 0 || printableRatio(data) < 0.5) {
+			logVerbose(cfg, "[!] %s body biner — dilewati", rawURL)
+			return "", fmt.Errorf("skipped (binary body)")
 		}
 		// v3: scan response headers juga (mirip mode httpx yang menggabung raw_header).
 		// Header seperti Set-Cookie, X-Api-Key, Authorization, X-Amz-* sering
@@ -377,47 +470,197 @@ func jwtAlgIsNone(token string) bool {
 // bisa match. Diturunkan AMAN dari regex.String() (tidak akan false-negative):
 // hanya diambil bila literal itu benar-benar prefix wajib dari match.
 
-var patternPrefilter []string
+// patternPrefilter sudah tidak dipakai di jalur panas: gate literal kini
+// diturunkan dari AST regexp (lihat patternNeeds) dan mencakup kasus prefix
+// literal maupun alternasi.
+
+// patternNeeds[i] = gate literal untuk pola i, diturunkan dari AST regexp.
+// Bentuknya DNF sederhana: AND antar-group, OR di dalam group.
+// Contoh `\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b` → satu group {akia,abia,acca,asia}
+// (match pasti mengandung salah satunya), sedangkan `foo bar` → dua group.
+// Gate ini menyumbang percepatan besar: 135 dari 448 pola sebelumnya tidak
+// punya gate sama sekali sehingga regex mahal selalu dijalankan.
+type needLit struct {
+	lit  string
+	fold bool // case-insensitive → cek pada contentLower
+}
+type litGroup []needLit // OR
+
+var patternNeeds [][]litGroup
+
+// patternIndex: nama pola → urutan deklarasi. Dipakai dedupeOverlapping sebagai
+// tie-break (pola yang dideklarasikan lebih awal = keluarga yang lebih spesifik:
+// pola kontekstual regional/vertikal ada di depan, pola bare-prefix di belakang).
+var patternIndex map[string]int
+
+// genericPatterns: pola "senjata terakhir" yang menangkap hampir semua bentuk
+// rahasia. Kalau pola ini bersaing dengan pola spesifik untuk nilai yang sama,
+// pola spesifik yang menang (supaya laporan menyebut layanannya).
+var genericPatterns = map[string]bool{
+	"Generic Secret / Password in code":                  true,
+	"Generic API Key in code":                            true,
+	"Password assignment (quoted or bare)":               true,
+	"Password assignment bare (env/config)":              true,
+	"Password assignment (pass/pwd)":                     true,
+	"URI with embedded credentials":                      true,
+	"Bearer Token in code":                               true,
+	"Bare high-entropy credentials (user:pass)":          true,
+	"Freeform credentials near keyword (user:pass)":      true,
+	"HTML comment credentials (user:pass)":               true,
+	"JS/line comment credentials (user:pass)":            true,
+	"Block comment credentials (user:pass)":              true,
+	"Username + Password pair assignment":                true,
+	"Hardcoded password input value":                     true,
+	"Hardcoded password input value (value before type)": true,
+	"Encryption Key in code":                             true,
+}
 
 func init() {
-	patternPrefilter = make([]string, len(patterns))
+	patterns = append(patterns, extraPatterns...)
+	patternNeeds = make([][]litGroup, len(patterns))
+	patternIndex = make(map[string]int, len(patterns))
 	for i, p := range patterns {
-		patternPrefilter[i] = derivePrefilter(p.Regex.String())
+		patternNeeds[i] = requiredLiterals(p.Regex.String())
+		if _, dup := patternIndex[p.Name]; !dup {
+			patternIndex[p.Name] = i
+		}
 	}
+}
+
+// betterFinding melaporkan apakah temuan a lebih disukai daripada b.
+// Urutan preferensi: pola spesifik > pola generik, lalu urutan deklarasi pola
+// (pola kontekstual/vertikal dideklarasikan lebih dulu daripada pola bare-prefix),
+// lalu severity, lalu match terpanjang.
+func betterFinding(a, b Finding) bool {
+	ga := genericPatterns[strings.TrimSuffix(a.Pattern, " (decoded)")]
+	gb := genericPatterns[strings.TrimSuffix(b.Pattern, " (decoded)")]
+	if ga != gb {
+		return !ga
+	}
+	if ia, ib := patternIndexOf(a.Pattern), patternIndexOf(b.Pattern); ia != ib {
+		return ia < ib
+	}
+	if sevRank[a.Severity] != sevRank[b.Severity] {
+		return sevRank[a.Severity] > sevRank[b.Severity]
+	}
+	return len(a.Match) >= len(b.Match)
+}
+
+func patternIndexOf(patternName string) int {
+	name := strings.TrimSuffix(patternName, " (decoded)")
+	if i, ok := patternIndex[name]; ok {
+		return i
+	}
+	return len(patterns)
+}
+
+// requiredLiterals mengekstrak gate literal wajib dari sebuah pola (kosong = tanpa gate).
+func requiredLiterals(src string) []litGroup {
+	re, err := syntax.Parse(src, syntax.Perl)
+	if err != nil {
+		return nil
+	}
+	groups, ok := requiredLits(re.Simplify())
+	if !ok || len(groups) == 0 {
+		return nil
+	}
+	return groups
+}
+
+// requiredLits mengembalikan group literal yang HARUS terpenuhi setiap match.
+// ok=false berarti subtree ini tidak bisa dijadikan gate (mis. opsional).
+func requiredLits(re *syntax.Regexp) ([]litGroup, bool) {
+	switch re.Op {
+	case syntax.OpLiteral:
+		if len(re.Rune) < 4 {
+			return nil, false
+		}
+		lit := string(re.Rune)
+		if re.Flags&syntax.FoldCase != 0 {
+			// pencocokan case-insensitive: hanya aman untuk ASCII murni
+			for _, r := range lit {
+				if r > 127 {
+					return nil, false
+				}
+			}
+			return []litGroup{{{lit: strings.ToLower(lit), fold: true}}}, true
+		}
+		return []litGroup{{{lit: lit}}}, true
+	case syntax.OpCapture, syntax.OpPlus:
+		if len(re.Sub) == 0 {
+			return nil, false
+		}
+		return requiredLits(re.Sub[0])
+	case syntax.OpRepeat:
+		if re.Min < 1 || len(re.Sub) == 0 {
+			return nil, false
+		}
+		return requiredLits(re.Sub[0])
+	case syntax.OpConcat:
+		// semua anak harus match → gabungan (AND) gate tiap anak tetap wajib
+		var out []litGroup
+		for _, sub := range re.Sub {
+			gs, ok := requiredLits(sub)
+			if !ok {
+				continue
+			}
+			out = append(out, gs...)
+		}
+		return out, true
+	case syntax.OpAlternate:
+		// setiap match memenuhi tepat satu cabang → hanya literal yang muncul
+		// di SEMUA cabang (group pertama tiap cabang) yang aman dijadikan gate.
+		if len(re.Sub) == 0 {
+			return nil, false
+		}
+		union := map[string]needLit{}
+		for _, sub := range re.Sub {
+			gs, ok := requiredLits(sub)
+			if !ok || len(gs) == 0 {
+				return nil, false
+			}
+			for _, l := range gs[0] {
+				union[l.lit] = l
+			}
+		}
+		if len(union) == 0 {
+			return nil, false
+		}
+		g := make(litGroup, 0, len(union))
+		for _, l := range union {
+			g = append(g, l)
+		}
+		sort.Slice(g, func(i, j int) bool { return g[i].lit < g[j].lit })
+		return []litGroup{g}, true
+	}
+	return nil, false
+}
+
+// prefiltersAllow melaporkan apakah pola ke-pi masih mungkin match di konten.
+func prefiltersAllow(pi int, content, contentLower string) bool {
+	for _, g := range patternNeeds[pi] {
+		ok := false
+		for _, n := range g {
+			if n.fold {
+				if strings.Contains(contentLower, n.lit) {
+					ok = true
+					break
+				}
+			} else if strings.Contains(content, n.lit) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // derivePrefilter mengembalikan substring literal wajib (lowercase) atau "".
 // Konservatif: jika ada keraguan (quantifier/alternation di ujung literal),
 // kembalikan "" agar pola tetap dijalankan (tidak melewatkan finding).
-func derivePrefilter(src string) string {
-	s := src
-	s = strings.TrimPrefix(s, "(?i)")
-	s = strings.TrimPrefix(s, "\\b")
-	const meta = "[](){}.*+?|\\^$"
-	runes := []rune(s)
-	var lit []rune
-	i := 0
-	for ; i < len(runes); i++ {
-		if strings.ContainsRune(meta, runes[i]) {
-			break
-		}
-		lit = append(lit, runes[i])
-	}
-	// Char tepat setelah literal: '?','*','|','{' membuat char terakhir
-	// opsional / cabang alternasi → literal tak lagi wajib penuh → tolak.
-	if i < len(runes) {
-		switch runes[i] {
-		case '?', '*', '|', '{':
-			return ""
-		}
-	}
-	kw := strings.ToLower(string(lit))
-	if len(kw) < 4 {
-		return ""
-	}
-	return kw
-}
-
 // ─── Scanner ──────────────────────────────────────────────────────────────────
 
 type lineIndex struct{ starts []int }
@@ -462,6 +705,9 @@ func (li *lineIndex) lineTextOf(content string, n int) string {
 
 // v3: public-by-design keys → downgrade to INFO (filter out with --no-public)
 var noPublicGlobal bool
+
+// noDecodeGlobal mematikan layer decode/obfuscation (--no-decode).
+var noDecodeGlobal bool
 var publicByDesign = map[string]bool{
 	"Stripe Live Publishable Key":                true,
 	"Midtrans Client Key (public)":               true,
@@ -524,6 +770,7 @@ var (
 	reReversed  = regexp.MustCompile(`"([^"\\\n]{16,})"\.split\(\s*""\s*\)\.reverse\(\)|'([^'\\\n]{16,})'\.split\(\s*''\s*\)\.reverse\(\)`)
 	reConcat    = regexp.MustCompile(`"([^"\\\n]*)"\s*\+\s*"([^"\\\n]*)"`)
 	reVarAssign = regexp.MustCompile(`(?:(?:var|let|const)\s+|,)([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*("([^"\\\n]{6,200})"|'([^'\\\n]{6,200})')`)
+	reIdent     = regexp.MustCompile(`\b[A-Za-z_$][A-Za-z0-9_$]*\b`)
 )
 
 func unescapeJS(s string) string {
@@ -639,56 +886,85 @@ func joinConcat(s string) string {
 	return s
 }
 
-// propagateVars: one-hop constant propagation for minified JS.
-// `var n="LITERAL"` assigned EXACTLY once -> uses in value position
-// (: = ( [ ! before; not key/comparison after) get the literal inline.
-// Semantics-preserving (single assignment), so zero new FP class; unlocks
-// {apiKey:n} shapes and literals created by other decodes.
+// propagateVars: one-hop constant propagation for minified JS — versi single-pass.
+//
+// Versi lama O(decl × n): tiap deklarasi meng-compile 2 regex baru lalu men-scan
+// SELURUH body (terukur 11.6 s untuk bundle JS 1.1 MB, dipanggil sekali per
+// varian decode → ~45 s/body). Versi ini memindai identifier satu kali,
+// menghitung kemunculan per nama, lalu mengganti dari kiri ke kanan — syarat
+// keamanan tetap sama (nama muncul tepat 2x: 1 deklarasi + 1 pemakaian bernilai).
 func propagateVars(s string) string {
 	if !(strings.Contains(s, "var ") || strings.Contains(s, "let ") || strings.Contains(s, "const ")) {
 		return s
 	}
 	type decl struct {
-		name, lit string
+		lit        string
+		isAmbiguos bool
 	}
-	var decls []decl
+	decls := make(map[string]*decl, 64)
 	for _, loc := range reVarAssign.FindAllStringSubmatchIndex(s, -1) {
+		if loc[2] < 0 || loc[4] < 0 {
+			continue
+		}
 		name := s[loc[2]:loc[3]]
 		lit := s[loc[4]:loc[5]]
 		if strings.Contains(lit, "\n") {
 			continue
 		}
-		decls = append(decls, decl{name, lit})
+		if d, ok := decls[name]; ok {
+			if d.lit != lit {
+				d.isAmbiguos = true
+			}
+			continue
+		}
+		decls[name] = &decl{lit: lit}
+	}
+	for name, d := range decls {
+		if d.isAmbiguos {
+			delete(decls, name)
+		}
 	}
 	if len(decls) == 0 {
 		return s
 	}
-	wordRe := func(name string) *regexp.Regexp {
-		return regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`)
-	}
-	assignRe := func(name string) *regexp.Regexp {
-		return regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\s*=`)
-	}
-	cur := s
-	changed := false
-	for _, d := range decls {
-		wr := wordRe(d.name)
-		if len(wr.FindAllStringIndex(cur, -1)) != 2 {
-			continue // used 0x (dead) or >1x (unsafe) -> skip
+
+	// satu pass: posisi semua kemunculan identifier yang relevan
+	type pos struct{ start, end int }
+	occ := make(map[string][]pos, len(decls))
+	for _, loc := range reIdent.FindAllStringIndex(s, -1) {
+		if _, want := decls[s[loc[0]:loc[1]]]; !want {
+			continue
 		}
-		uses := wr.FindAllStringIndex(cur, -1)
-		ar := assignRe(d.name)
-		useIdx := -1
-		declCount := 0
-		for i, u := range uses {
-			tail := cur[u[0]:]
-			if m := ar.FindStringIndex(tail); m != nil && m[0] == 0 {
-				after := tail[m[1]:]
-				if len(after) > 0 && (after[0] == '=' || after[0] == '>') {
-					continue // == / === / =>
+		occ[s[loc[0]:loc[1]]] = append(occ[s[loc[0]:loc[1]]], pos{loc[0], loc[1]})
+	}
+
+	type repl struct {
+		start, end int
+		lit        string
+	}
+	repls := make([]repl, 0, len(decls))
+	for name, d := range decls {
+		ps := occ[name]
+		if len(ps) != 2 {
+			continue // 0x (dead) atau >1x (tidak aman) → skip, sama seperti versi lama
+		}
+		declIdx, useIdx := -1, -1
+		for i, p := range ps {
+			j := p.end
+			for j < len(s) && isSpaceByte(s[j]) {
+				j++
+			}
+			if j < len(s) && s[j] == '=' {
+				if j+1 < len(s) && (s[j+1] == '=' || s[j+1] == '>') {
+					// == / === / => : bukan deklarasi
+				} else {
+					if declIdx != -1 {
+						declIdx = -2
+						break
+					}
+					declIdx = i
+					continue
 				}
-				declCount++
-				continue // this one is the declaration
 			}
 			if useIdx != -1 {
 				useIdx = -2
@@ -696,35 +972,52 @@ func propagateVars(s string) string {
 			}
 			useIdx = i
 		}
-		if useIdx < 0 || declCount != 1 {
+		if declIdx < 0 || useIdx < 0 {
 			continue
 		}
-		u := uses[useIdx]
-		pi := u[0] - 1
-		for pi >= 0 && (cur[pi] == ' ' || cur[pi] == '\t' || cur[pi] == '\n' || cur[pi] == '\r') {
+		u := ps[useIdx]
+		// konteks kiri harus posisi nilai, bukan key/identifier lain
+		pi := u.start - 1
+		for pi >= 0 && isSpaceByte(s[pi]) {
 			pi--
 		}
 		if pi < 0 {
 			continue
 		}
-		pc := cur[pi]
-		if pc != ':' && pc != '=' && pc != '(' && pc != '[' && pc != '!' {
+		switch s[pi] {
+		case ':', '=', '(', '[', '!':
+		default:
 			continue
 		}
-		ni := u[1]
-		for ni < len(cur) && (cur[ni] == ' ' || cur[ni] == '\t' || cur[ni] == '\n' || cur[ni] == '\r') {
+		ni := u.end
+		for ni < len(s) && isSpaceByte(s[ni]) {
 			ni++
 		}
-		if ni < len(cur) && (cur[ni] == ':' || cur[ni] == '=' || cur[ni] == '(') {
+		if ni < len(s) && (s[ni] == ':' || s[ni] == '=' || s[ni] == '(') {
 			continue
 		}
-		cur = cur[:u[0]] + d.lit + cur[u[1]:]
-		changed = true
+		repls = append(repls, repl{u.start, u.end, d.lit})
 	}
-	if !changed {
+	if len(repls) == 0 {
 		return s
 	}
-	return cur
+	sort.Slice(repls, func(i, j int) bool { return repls[i].start < repls[j].start })
+	out := make([]byte, 0, len(s))
+	prev := 0
+	for _, r := range repls {
+		if r.start < prev {
+			continue // overlap (tidak mestinya terjadi)
+		}
+		out = append(out, s[prev:r.start]...)
+		out = append(out, r.lit...)
+		prev = r.end
+	}
+	out = append(out, s[prev:]...)
+	return string(out)
+}
+
+func isSpaceByte(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
 func decodedVariants(content string) []string {
@@ -774,9 +1067,12 @@ func decodedVariants(content string) []string {
 func scanContent(rawURL, content string) []Finding {
 	contentLower := strings.ToLower(content) // v3/v2: sekali, untuk prefilter
 	base := scanSingle(rawURL, content, contentLower)
+	if noDecodeGlobal {
+		return dedupeOverlapping(base)
+	}
 	vars := decodedVariants(content)
 	if len(vars) == 0 {
-		return base
+		return dedupeOverlapping(base)
 	}
 	seen := make(map[string]struct{}, len(base)*2+8)
 	for _, f := range base {
@@ -798,6 +1094,57 @@ func scanContent(rawURL, content string) []Finding {
 			out = append(out, f)
 		}
 	}
+	return dedupeOverlapping(out)
+}
+
+// dedupeOverlapping membuang temuan yang teksnya saling mengandung pada URL yang
+// sama — mis. `sk_live_…` dilaporkan dua kali (pola Stripe + pola Clerk), atau URI
+// database dilaporkan oleh pola spesifik DAN pola generik "URI with embedded
+// credentials". Yang dipertahankan: severity tertinggi; bila seri, match terpanjang.
+func dedupeOverlapping(in []Finding) []Finding {
+	if len(in) < 2 {
+		return in
+	}
+	keep := make([]bool, len(in))
+	for i := range keep {
+		keep[i] = true
+	}
+	for i := 0; i < len(in); i++ {
+		for j := i + 1; j < len(in); j++ {
+			a, b := in[i].Match, in[j].Match
+			if a == "" || b == "" || in[i].URL != in[j].URL {
+				continue
+			}
+			if !strings.Contains(a, b) && !strings.Contains(b, a) {
+				continue
+			}
+			// hanya dedupe bila kedua match praktis nilai yang sama (rasio
+			// panjang >= 0.85). Tanpa guard ini, match "password saja" dari pola
+			// spesifik (mis. Messaging URI) bisa termakan match URI generik yang
+			// lebih panjang.
+			short, long := len(a), len(b)
+			if short > long {
+				short, long = long, short
+			}
+			if float64(short)/float64(long) < 0.85 {
+				continue
+			}
+			wi, wj := sevRank[in[i].Severity], sevRank[in[j].Severity]
+			_ = wi
+			_ = wj
+			if betterFinding(in[i], in[j]) {
+				keep[j] = false
+			} else {
+				keep[i] = false
+			}
+		}
+	}
+	out := in[:0]
+	for i, f := range in {
+		if keep[i] {
+			out = append(out, f)
+		}
+	}
 	return out
 }
 
@@ -810,12 +1157,11 @@ func scanSingle(rawURL, content, contentLower string) []Finding {
 
 func scanContentSeq(rawURL, content, contentLower string) []Finding {
 	var findings []Finding
-	seen := make(map[string]struct{})
 	li := buildLineIndex(content)
 
 	for pi, p := range patterns {
 		// v2: prefilter murah sebelum regex mahal
-		if kw := patternPrefilter[pi]; kw != "" && !strings.Contains(contentLower, kw) {
+		if !prefiltersAllow(pi, content, contentLower) {
 			continue
 		}
 		locs := p.Regex.FindAllStringSubmatchIndex(content, -1)
@@ -834,10 +1180,8 @@ func scanContentSeq(rawURL, content, contentLower string) []Finding {
 			if match == "" {
 				continue
 			}
-			if _, dup := seen[match]; dup {
-				continue
-			}
-			seen[match] = struct{}{}
+			// v3.1: dedupe by teks-match dipindah ke dedupeOverlapping() (satu tempat)
+			// agar pola kontekstual tidak kalah oleh pola generik yang match lebih dulu.
 			if len(match) < 6 {
 				continue
 			}
@@ -846,6 +1190,9 @@ func scanContentSeq(rawURL, content, contentLower string) []Finding {
 			}
 			lineNum := li.lineAt(startPos)
 			lt := li.lineTextOf(content, lineNum)
+			if dropFinding(&p, match, lt) {
+				continue
+			}
 			if p.Name == "Twitter/X Bearer Token" || strings.HasPrefix(p.Name, "Square") {
 				if strings.Contains(lt, "base64,") || strings.Contains(lt, "data:") {
 					continue
@@ -891,7 +1238,7 @@ func collectCandidates(content, contentLower string, s, e int) []patternCandidat
 	var out []patternCandidate
 	for pi := s; pi < e; pi++ {
 		p := &patterns[pi]
-		if kw := patternPrefilter[pi]; kw != "" && !strings.Contains(contentLower, kw) {
+		if !prefiltersAllow(pi, content, contentLower) {
 			continue
 		}
 		if p.MatchGroup == 0 {
@@ -952,14 +1299,11 @@ func mergeCandidates(rawURL, content string, groups [][]patternCandidate) []Find
 	}
 	li := buildLineIndex(content) // dibangun hanya jika ada kandidat (lazy)
 	var findings []Finding
-	seen := make(map[string]struct{})
 	for _, g := range groups {
 		for _, c := range g {
 			match := content[c.startPos:c.endPos]
-			if _, dup := seen[match]; dup {
-				continue
-			}
-			seen[match] = struct{}{}
+			// v3.1: dedupe by teks-match dipindah ke dedupeOverlapping() (satu tempat)
+			// agar pola kontekstual tidak kalah oleh pola generik yang match lebih dulu.
 			if len(match) < 6 {
 				continue
 			}
@@ -969,6 +1313,9 @@ func mergeCandidates(rawURL, content string, groups [][]patternCandidate) []Find
 			p := &patterns[c.pi]
 			lineNum := li.lineAt(c.startPos)
 			lt := li.lineTextOf(content, lineNum)
+			if dropFinding(p, match, lt) {
+				continue
+			}
 			if p.Name == "Twitter/X Bearer Token" || strings.HasPrefix(p.Name, "Square") {
 				if strings.Contains(lt, "base64,") || strings.Contains(lt, "data:") {
 					continue
@@ -1162,7 +1509,7 @@ var standaloneTokenPatterns = map[string]bool{
 	"ClickUp Personal Token (pk_<id>_)":                true,
 	"Stytch Secret (secret-live/test-)":                true,
 	"crates.io API Token (cio)":                        true,
-	"Cloudflare Turnstile Secret Key (0x3AAAA)":        true,
+	"Cloudflare Turnstile Secret Key (0x4AAAA, long)":  true,
 	"Cloudflare Turnstile Site Key (0x4AAAA)":          true,
 	"RunPod API Key (rpa_)":                            true,
 	"LaunchDarkly SDK/Mobile/API Key (sdk-/mob-/api-)": true,
@@ -1201,7 +1548,20 @@ func isBase64Slice(content string, startPos, endPos int) bool {
 			c == '+' || c == '/' || c == '_' || c == '-'
 	}
 	if startPos > 0 && isB64(content[startPos-1]) {
-		return true
+		// v3.1: sebelumnya karakter b64 TUNGGAL di kiri sudah cukup untuk
+		// membuang match → token di dalam URL path (…/v1/ghp_xxx) hilang total.
+		// Sekarang hanya dianggap potongan blob bila run b64 di kiri panjang.
+		left := 0
+		for i := startPos - 1; i >= 0 && left < 32; i-- {
+			if isB64(content[i]) || content[i] == '=' {
+				left++
+				continue
+			}
+			break
+		}
+		if left >= 20 {
+			return true
+		}
 	}
 	if endPos < len(content) {
 		if c := content[endPos]; isB64(c) || c == '=' {
@@ -1219,6 +1579,62 @@ func isBase64Slice(content string, startPos, endPos int) bool {
 	return false
 }
 
+// ─── Guard tambahan per-pola (audit 2026-11) ──────────────────────────────────
+
+// reIPv6Line mendeteksi baris berisi alamat IPv6 (≥4 kolom) — baris seperti
+// `fe80:0000:...:0001` di /etc/hosts sebelumnya dilaporkan sebagai entri .pgpass.
+var reIPv6Line = regexp.MustCompile(`(?i)\b(?:[0-9a-f]{0,4}:){4,}[0-9a-f]{0,4}\b`)
+
+// credPlaceholderWords: nilai password di URI contoh/dokumentasi.
+var credPlaceholderWords = map[string]bool{
+	"password": true, "passwd": true, "pass": true, "pwd": true,
+	"secret": true, "changeme": true, "user": true, "username": true,
+	"root": true, "admin": true, "test": true, "example": true,
+	"xxx": true, "xxxx": true, "your_password": true, "yourpassword": true,
+	"password123": true, "secret123": true, "123456": true, "123456789": true,
+	"qwerty": true, "mypassword": true, "password1": true,
+}
+
+// credPlaceholder melaporkan apakah password di dalam URI hanya placeholder
+// (`postgres://user:password@localhost/db` → bukan temuan).
+func credPlaceholder(match string) bool {
+	i := strings.Index(match, "://")
+	if i < 0 {
+		return false
+	}
+	rest := match[i+3:]
+	at := strings.IndexByte(rest, '@')
+	if at <= 0 {
+		return false
+	}
+	ui := rest[:at]
+	if strings.Contains(ui, "${") || strings.Contains(ui, "{{") ||
+		strings.Contains(ui, "%s") || strings.Contains(ui, "<your") {
+		return true
+	}
+	colon := strings.IndexByte(ui, ':')
+	if colon < 0 {
+		return false
+	}
+	pw := strings.ToLower(strings.TrimSpace(ui[colon+1:]))
+	if credPlaceholderWords[pw] {
+		return true
+	}
+	return strings.HasPrefix(pw, "your_") || strings.HasPrefix(pw, "your-")
+}
+
+// dropFinding menampung guard per-pola tambahan (audit 2026-11). Dipakai di jalur
+// serial maupun paralel agar perilakunya identik.
+func dropFinding(p *Pattern, match, lineText string) bool {
+	if p.Name == "PostgreSQL .pgpass entry" && reIPv6Line.MatchString(lineText) {
+		return true
+	}
+	if (strings.Contains(p.Name, "URI") || strings.Contains(p.Name, "URL")) && credPlaceholder(match) {
+		return true
+	}
+	return false
+}
+
 // humanCredPatterns marks pattern names that need extra anti-FP checks.
 var humanCredPatterns = map[string]bool{
 	"HTML comment credentials (user:pass)":               true,
@@ -1231,6 +1647,7 @@ var humanCredPatterns = map[string]bool{
 	"Hardcoded password input value":                     true,
 	"Hardcoded password input value (value before type)": true,
 	"Generic Secret / Password in code":                  true,
+	"Password assignment (pass/pwd)":                     true,
 }
 
 // uiNoiseWords: values that look like secrets but are HTML/JS/UI/CSS noise.
@@ -1671,6 +2088,7 @@ func worker(id int, jobs <-chan Job, results chan<- Finding, cfg *Config, fsCach
 			logVerbose(cfg, "[W%d] Reading file: %s", id, job.URL)
 			content, err = readLocalFile(cfg, job.URL)
 		} else {
+			job.URL = withScheme(job.URL) // laporkan URL ternormalisasi
 			logVerbose(cfg, "[W%d] Fetching: %s", id, job.URL)
 			content, err = fetchURL(cfg, job.URL, fsCache)
 		}
@@ -1684,6 +2102,80 @@ func worker(id int, jobs <-chan Job, results chan<- Finding, cfg *Config, fsCach
 		}
 		if len(findings) > 0 {
 			logVerbose(cfg, "[W%d] ✓ %s → %d finding(s)", id, job.URL, len(findings))
+		}
+		if !job.IsFile {
+			crawlScripts(cfg, job.URL, content, rl, fsCache, results, id)
+		}
+	}
+}
+
+// ─── JS bundle follower (--js-crawl) ────────────────────────────────────────────
+//
+// Secret paling sering ada di bundle JS, bukan di HTML halaman. Tanpa langkah ini
+// `-u https://app.tld` hanya memindai HTML dan melewatkan seluruh JS-nya.
+// Dibatasi: same-host saja, satu level, maksimum N script (--js-crawl), dedupe global
+// per URL, dan tetap melewati rate limiter.
+
+var (
+	reScriptSrc = regexp.MustCompile(`(?i)<script[^>]+?src\s*=\s*["']([^"'>]+)["']`)
+	seenScripts sync.Map // URL script yang sudah pernah di-scan
+)
+
+func looksLikeHTML(s string) bool {
+	head := s
+	if len(head) > 8192 {
+		head = head[:8192]
+	}
+	l := strings.ToLower(head)
+	return strings.Contains(l, "<script") || strings.Contains(l, "<!doctype") || strings.Contains(l, "<html")
+}
+
+func crawlScripts(cfg *Config, pageURL, content string, rl *RateLimiter, fsCache *FSCache, results chan<- Finding, id int) {
+	if cfg.JSCrawl <= 0 || !looksLikeHTML(content) {
+		return
+	}
+	base, err := url.Parse(withScheme(pageURL))
+	if err != nil || base.Hostname() == "" {
+		return
+	}
+	taken := 0
+	for _, m := range reScriptSrc.FindAllStringSubmatch(content, -1) {
+		if taken >= cfg.JSCrawl { // batas keras per halaman
+			break
+		}
+		ref := strings.TrimSpace(m[1])
+		if ref == "" || strings.HasPrefix(ref, "data:") || strings.HasPrefix(ref, "javascript:") {
+			continue
+		}
+		su, err := base.Parse(ref)
+		if err != nil || su.Hostname() == "" {
+			continue
+		}
+		if su.Hostname() != base.Hostname() { // jangan keluar host (scope)
+			continue
+		}
+		su.Fragment = ""
+		key := su.String()
+		if _, dup := seenScripts.LoadOrStore(key, struct{}{}); dup {
+			continue
+		}
+		taken++
+		rl.Wait()
+		if cfg.DelayMs > 0 && rl == nil {
+			time.Sleep(time.Duration(cfg.DelayMs) * time.Millisecond)
+		}
+		body, err := fetchURL(cfg, key, fsCache)
+		if err != nil {
+			logVerbose(cfg, "[W%d] JS skip %s: %v", id, key, err)
+			continue
+		}
+		if len(body) > int(cfg.MaxBodyBytes) {
+			body = body[:cfg.MaxBodyBytes]
+		}
+		fs := scanContent(key, body)
+		logVerbose(cfg, "[W%d] ✓ JS %s (%d bytes) → %d finding(s)", id, key, len(body), len(fs))
+		for _, f := range fs {
+			results <- f
 		}
 	}
 }
@@ -1908,6 +2400,9 @@ func (s *outputStats) BySeverity(sev string) int {
 
 // emit menulis satu finding: JSON streaming bila --json, otherwise teks warna.
 func emit(cfg *Config, fd Finding, outWriter io.Writer, js *jsonStream, stats *outputStats) {
+	if !severityAtLeast(cfg.MinSeverity, fd.Severity) {
+		return
+	}
 	if cfg.OutputJSON && js != nil {
 		capped := fd
 		if len([]rune(capped.Match)) > 4096 {
@@ -2129,10 +2624,19 @@ func main() {
 		flagHTTPXJSON   = flag.String("httpx-json", "", "Scan bodies from httpx -json -irr JSONL (body-reuse, no re-fetch)")
 		flagScope       = flag.String("scope", "", "With --httpx-json: only scan records whose host == domain or *.domain")
 		flagNoPublic    = flag.Bool("no-public", false, "Skip public-by-design keys (RUM/publishable/site/storefront/algolia-search)")
+		flagMinSev      = flag.String("min-severity", "", "Only emit findings at or above this level: critical|high|medium|low|info")
+		flagFailOn      = flag.Bool("fail-on-findings", false, "Exit with code 2 when at least one finding is emitted (CI/pipeline)")
+		flagInsecure    = flag.Bool("k", false, "Skip TLS certificate verification (target dengan sertifikat rusak)")
+		flagInsecureL   = flag.Bool("insecure", false, "Skip TLS certificate verification (alias for -k)")
+		flagProxy       = flag.String("proxy", "", "Explicit proxy URL (default: HTTP(S)_PROXY env)")
+		flagNoDecode    = flag.Bool("no-decode", false, "Disable obfuscated-layer decode pass (faster, fewer findings)")
+		flagJSCrawl     = flag.Int("js-crawl", 0, "On HTML targets, also fetch and scan up to N same-host <script src> files (0=off)")
 	)
 	var headers multiFlag
+	var cookies multiFlag
 	flag.Var(&headers, "H", "Custom request header (repeatable)")
 	flag.Var(&headers, "header", "Custom request header, alias for -H")
+	flag.Var(&cookies, "cookie", "Cookie 'name=value' to send with every request (repeatable)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "%s\nUsage: secrethunter2 [options] -u <url> | -l <file> | --httpx-json <file>\n", fmt.Sprintf(banner, version))
@@ -2141,10 +2645,19 @@ func main() {
 
 	flag.Parse()
 	noPublicGlobal = *flagNoPublic
+	noDecodeGlobal = *flagNoDecode
 
 	if *flagVersion {
 		fmt.Printf("secrethunter2 v%s\n", version)
 		os.Exit(0)
+	}
+
+	minSev := strings.ToUpper(strings.TrimSpace(*flagMinSev))
+	if minSev != "" {
+		if _, ok := sevRank[minSev]; !ok {
+			fmt.Fprintf(os.Stderr, "Error: invalid --min-severity %q (use critical|high|medium|low|info)\n", *flagMinSev)
+			os.Exit(1)
+		}
 	}
 
 	setFlags := map[string]bool{}
@@ -2179,19 +2692,29 @@ func main() {
 	}
 
 	cfg := &Config{
-		Threads:      threads,
-		DelayMs:      delayMs,
-		RatePerSec:   *flagRate,
-		UserAgent:    *flagUA,
-		OutputJSON:   *flagJSON,
-		Timeout:      *flagTimeout,
-		Silent:       *flagSilent || *flagSilentLong,
-		Verbose:      *flagVerbose || *flagVerboseLong,
-		NoColor:      *flagNoColor,
-		MaxBodyBytes: int64(max(*flagMaxSize, 1)) * 1024 * 1024,
-		ExtraHeaders: []string(headers),
-		HTTPXJSON:    *flagHTTPXJSON,
-		Scope:        *flagScope,
+		Threads:        threads,
+		DelayMs:        delayMs,
+		RatePerSec:     *flagRate,
+		UserAgent:      *flagUA,
+		OutputJSON:     *flagJSON,
+		Timeout:        *flagTimeout,
+		Silent:         *flagSilent || *flagSilentLong,
+		Verbose:        *flagVerbose || *flagVerboseLong,
+		NoColor:        *flagNoColor,
+		MaxBodyBytes:   int64(max(*flagMaxSize, 1)) * 1024 * 1024,
+		ExtraHeaders:   []string(headers),
+		HTTPXJSON:      *flagHTTPXJSON,
+		Scope:          *flagScope,
+		MinSeverity:    minSev,
+		FailOnFindings: *flagFailOn,
+		Insecure:       *flagInsecure || *flagInsecureL,
+		ProxyURL:       *flagProxy,
+		Cookies:        []string(cookies),
+		NoDecode:       *flagNoDecode,
+		JSCrawl:        *flagJSCrawl,
+	}
+	if cfg.Insecure {
+		logWarn(cfg, "TLS verification disabled (-k) — jangan pakai saat mengirim kredensial")
 	}
 	cfg.OutputFile = first(*flagOutput, *flagOutputLong)
 	fsURL := first(*flagFS, *flagFSShort)
@@ -2201,19 +2724,28 @@ func main() {
 
 	// Shared HTTP client (keep-alive)
 	httpClient = buildClient(cfg)
+	// FlareSolverr butuh timeout > maxTimeout request FS (60s).
+	fsTimeout := cfg.Timeout
+	if fsTimeout < 75 {
+		fsTimeout = 75
+	}
+	fsClient = buildClient(cfg)
+	fsClient.Timeout = time.Duration(fsTimeout) * time.Second
 
 	// ── Output writer ──
+	// v3.1: file ditulis 0600 (berisi secret!) dan TANPA escape ANSI, sedangkan
+	// stdout tetap berwarna. Sebelumnya file hasil -o penuh kode warna.
 	var outWriter io.Writer = os.Stdout
 	var outF *os.File
 	if cfg.OutputFile != "" {
 		var err error
-		outF, err = os.Create(cfg.OutputFile)
+		outF, err = os.OpenFile(cfg.OutputFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
 			os.Exit(1)
 		}
 		defer outF.Close()
-		outWriter = io.MultiWriter(os.Stdout, outF)
+		outWriter = io.MultiWriter(os.Stdout, ansiStripper{w: outF})
 	}
 
 	// ── Banner ──
@@ -2304,6 +2836,25 @@ func main() {
 			os.Exit(1)
 		}
 
+		// v3.1: --scope sebelumnya hanya berlaku untuk --httpx-json dan diabaikan
+		// diam-diam di mode -l/-u. Sekarang URL di luar scope difilter (dan jumlahnya
+		// dilaporkan) supaya tidak ada target nyasar yang dipindai.
+		if cfg.Scope != "" && len(cfg.URLs) > 0 {
+			before := len(cfg.URLs)
+			kept := cfg.URLs[:0]
+			for _, u := range cfg.URLs {
+				if hostInScope(withScheme(u), cfg.Scope) {
+					kept = append(kept, u)
+				}
+			}
+			cfg.URLs = kept
+			logInfo(cfg, "Scope         : %s (%d/%d URL in scope)", cfg.Scope, len(cfg.URLs), before)
+			if len(cfg.URLs) == 0 && len(cfg.Files) == 0 {
+				fmt.Fprintln(os.Stderr, "Error: no targets left after --scope filter")
+				os.Exit(1)
+			}
+		}
+
 		// FlareSolverr
 		var fsCache *FSCache
 		if cfg.FlareSolvrURL != "" {
@@ -2361,7 +2912,10 @@ func main() {
 			logInfo(cfg, "Results saved : %s", cfg.OutputFile)
 		}
 	}
-	return
+	// v3.1: exit code untuk integrasi pipeline (sebelumnya selalu 0).
+	if cfg.FailOnFindings && stats.Total() > 0 {
+		os.Exit(2)
+	}
 }
 
 // runFetchMode menjalankan worker pool mode URL/file (perilaku v1).
