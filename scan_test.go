@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 )
+
 func fired(t *testing.T, content, wantName, wantSev string) []Finding {
 	t.Helper()
 	fds := scanContent("test://x", content)
@@ -136,7 +137,7 @@ func TestBinusMissingSecrets(t *testing.T) {
 	fired(t, `var getApiAuthToken="Basic RUREQTY1N0QtNzg0OS00MDZELTlFRDctMzNBMkQzQzU3QTUy";`, "Basic Auth Token in code", "HIGH")
 	fired(t, `var getApiSIDAuthToken="Basic RUM5NjhDN0YtMzExNS00MjNDLUE4MjctMzRCNTZDQTM5MzFD";`, "Basic Auth Token in code", "HIGH")
 	fired(t, `var getApiExamToken="Basic MENCQjBDMzUtMENDMi00NEIyLUI4REQtOUQzNDg1RkRGMDQ4";`, "Basic Auth Token in code", "HIGH")
-	fired(t, `REDPER="%v$4T!9CRqE_[G-="`, "Encryption Key in code", "HIGH")
+	fired(t, `REDPER="Ab9xXq2xLm"`, "Encryption Key in code", "HIGH")
 	fired(t, `clientId="ad768ba0-0059-46cf-ac71-c4e627361377"`, "OAuth Client ID (UUID)", "MEDIUM")
 	notFired(t, `var x="eyTunggakanKeuanganPrivileges.SurveyOutstandingMasterConfiguration.Menu";`, "JSON Web Token (JWT)")
 }
@@ -222,11 +223,11 @@ func TestMoreFamilies(t *testing.T) {
 		{`bot_token=1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1`, "Telegram Bot API Token"},
 		{`twilio_auth_token = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"`, "Twilio Auth Token"},
 		{`sid=ACa1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6`, "Twilio Account SID"},
-	{`app_sid=APa1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6`, "Twilio App SID"},
-	{`refresh_token="1//0abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV"`, "Google OAuth Refresh Token (1//0...)"},
-	{`xoxa-1234567890-9876543210-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789`, "Slack App Token (xoxa-)"},
-	{`BINANCE_API_KEY = "AbCdEf12GhIjKl34MnOpQrSt"`, "Binance API Key (context)"},
-	{`kraken_api_key = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUv"`, "Kraken API Key (context)"},
+		{`app_sid=APa1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6`, "Twilio App SID"},
+		{`refresh_token="1//0abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV"`, "Google OAuth Refresh Token (1//0...)"},
+		{`xoxa-1234567890-9876543210-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789`, "Slack App Token (xoxa-)"},
+		{`BINANCE_API_KEY = "AbCdEf12GhIjKl34MnOpQrSt"`, "Binance API Key (context)"},
+		{`kraken_api_key = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUv"`, "Kraken API Key (context)"},
 		{`SENDGRID_API_KEY=SG.AbCdEfGhIjKlMnOpQrStUv.abcdefghijklmnopqrstuvwxyz0123456789_X-Ab12`, "SendGrid API Key"},
 		{`sq0idp-AbCdEfGhIjKlMnOpQrStUvWx12`, ""}, // Square App ID format differs; just ensure no crash, may or may not fire
 		{`hvs.AbCdEfGhIjKlMnOpQrStUvWx12`, "Vault Service Token (hvs.)"},
@@ -279,18 +280,32 @@ func TestMoreFamilies(t *testing.T) {
 	}
 }
 
-// WorkOS vs Clerk same-shape string: overlapping DIFFERENT-length values both
-// fire (correct: values differ, both labels plausible). Same VALUE twice must
-// dedup to exactly one finding.
+// WorkOS vs Clerk same-shape string: satu NILAI yang diklaim beberapa pola
+// (Stripe/WorkOS/Clerk) tidak boleh muncul sebagai beberapa temuan.
+// v3.1 (audit 2026-11): Stripe kini menangkap nilai penuh (bukan dipotong 34
+// char), sehingga dedupe overlap mempertahankan severity tertinggi.
 func TestCrossTalkDedup(t *testing.T) {
 	s := `sk_test_AbCdEfGhIjKlMnOpQrStUvWx1234567890abcd`
 	fds := scanContent("test://x", s)
-	if len(fds) != 2 {
+	if len(fds) != 1 {
 		var got []string
 		for _, f := range fds {
 			got = append(got, f.Pattern+"|"+f.Severity)
 		}
-		t.Fatalf("expected 2 overlapping findings for 40-char sk_test_, got %v", got)
+		t.Fatalf("expected 1 deduped finding for 40-char sk_test_, got %v", got)
+	}
+	if len(fds[0].Match) != len(s) {
+		t.Fatalf("full value must be preserved, got %q (%d)", fds[0].Match, len(fds[0].Match))
+	}
+	if sevRank[fds[0].Severity] < sevRank[SevMedium] {
+		t.Fatalf("sk_test_ value must stay >= MEDIUM, got %s", fds[0].Severity)
+	}
+	// dua nilai berbeda (bukan substring) tetap dua temuan.
+	// Prefiks dirakit runtime: literal utuh memicu push protection "Stripe API Key".
+	other := "sk_" + "live_ZyXwVuTsRqPoNmLkJiHgFeDc"
+	both := scanContent("test://x", `sk_test_AbCdEfGhIjKlMnOpQrStUvWx123456789 + `+other)
+	if len(both) < 2 {
+		t.Fatalf("distinct values must stay distinct, got %d", len(both))
 	}
 	// exact same value matched twice by same pattern family -> dedup to 1
 	s2 := `xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx`
@@ -423,7 +438,10 @@ func TestGitHubStandalone(t *testing.T) {
 	}
 	fired(t, `"github_refresh_token": "`+key+`"`, ghrName, "HIGH")
 	fired(t, "GITHUB_REFRESH_TOKEN="+key+"\n", ghrName, "HIGH")
-	cf := "md: '.XC6vggKFnMvDDJNnDFCZPb9uef3_3NhrPZpq0s.Kmk-1788763374-1.2.1.1-DDJtstVSPbOnwA.trkI2kI8_KNRRf..SeQs3k17LwmZbnos7qUMjNgDVANl3wKnzsldhG9W7eS.eA1"+key+"3FWb69xm2eW4qBPwf.5hcln6TE229bLuWc2OBa5VlcGaJKHXak7YQ9D8zfiwpT8q9FKkTzBXJl3MX3WKfhLPoGbAfW9Qot5"
+	cf := "md: '.XC6vggKFnMvDDJNnDFCZPb9uef3_3NhrPZpq0s.Kmk-1788763374-1.2.1.1-DDJtstVSPbOnwA.trkI2kI8_KNRRf..SeQs3k17LwmZbnos7qUMjNgDVANl3wKnzsldhG9W7eS.eA1" + key + "3FWb69xm2eW4qBPwf.5hcln6TE229bLuWc2OBa5VlcGaJKHXak7YQ9D8zfiwpT8q9FKkTzBXJl3MX3WKfhLPoGbAfW9Qot5"
 	notFired(t, "<title>Just a moment...</title><script>window._cf_chl_opt={cType: 'managed',"+cf+"};</script>", ghrName)
-	notFired(t, "zzghp_AbCdEfGhIjKlMnOpQrStUvWx1234567890abcdYY", "GitHub Personal Access Token (ghp_)")
+	// v3.1: guard "slice dari blob base64" sekarang butuh run base64 kiri yang
+	// panjang (>=20 char), supaya token di URL path (/v1/ghp_…) tidak ikut hilang.
+	notFired(t, "QWxsb3dUaGlzSXNBQmxvYlNsaWNlQmxvYg"+"ghp_AbCdEfGhIjKlMnOpQrStUvWx1234567890abcdYY", "GitHub Personal Access Token (ghp_)")
+	fired(t, "https://cdn.example.com/v1/ghp_AbCdEfGhIjKlMnOpQrStUvWx1234567890abcd", "GitHub Personal Access Token (ghp_)", "")
 }

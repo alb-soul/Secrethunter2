@@ -77,8 +77,11 @@ var patterns = []Pattern{
 		Severity: SevCritical,
 	},
 	{
-		Name:     "PGP Private Key Block",
-		Regex:    regexp.MustCompile(`-----BEGIN PGP PRIVATE KEY BLOCK-----`),
+		Name: "PGP Private Key Block",
+		// BUGFIX audit-2026-11: sebelumnya hanya header yang di-match, jadi setiap
+		// dokumentasi/contoh berisi teks header langsung jadi CRITICAL. Sekarang
+		// wajib diikuti material base64 seperti pola private key lain.
+		Regex:    regexp.MustCompile(`-----BEGIN PGP PRIVATE KEY BLOCK-----[\\nrt"'\s]{0,40}[A-Za-z0-9+/]{40,}`),
 		Severity: SevCritical,
 	},
 	{
@@ -180,7 +183,7 @@ var patterns = []Pattern{
 	},
 	{
 		Name:     "GitHub App Refresh Token (ghr_)",
-		Regex:    regexp.MustCompile(`ghr_[A-Za-z0-9]{76}`),
+		Regex:    regexp.MustCompile(`\bghr_[A-Za-z0-9]{36,120}\b`),
 		Severity: SevHigh,
 	},
 	{
@@ -271,22 +274,22 @@ var patterns = []Pattern{
 	// ─── Stripe ──────────────────────────────────────────────────────────────────
 	{
 		Name:     "Stripe Live Secret Key",
-		Regex:    regexp.MustCompile(`sk_live_[0-9A-Za-z]{24,34}`),
+		Regex:    regexp.MustCompile(`\bsk_live_[0-9A-Za-z]{24,120}\b`),
 		Severity: SevCritical,
 	},
 	{
 		Name:     "Stripe Test Secret Key",
-		Regex:    regexp.MustCompile(`sk_test_[0-9A-Za-z]{24,34}`),
+		Regex:    regexp.MustCompile(`\bsk_test_[0-9A-Za-z]{24,120}\b`),
 		Severity: SevMedium,
 	},
 	{
 		Name:     "Stripe Live Publishable Key",
-		Regex:    regexp.MustCompile(`pk_live_[0-9A-Za-z]{24,34}`),
+		Regex:    regexp.MustCompile(`\bpk_live_[0-9A-Za-z]{24,120}\b`),
 		Severity: SevMedium,
 	},
 	{
 		Name:     "Stripe Restricted Key",
-		Regex:    regexp.MustCompile(`rk_live_[0-9A-Za-z]{24,34}`),
+		Regex:    regexp.MustCompile(`\brk_live_[0-9A-Za-z]{24,120}\b`),
 		Severity: SevHigh,
 	},
 	{
@@ -633,7 +636,7 @@ var patterns = []Pattern{
 		Severity:   SevHigh,
 		MatchGroup: 1,
 	},
-	// NRIQ (no dash) confirmed by real-world finding: NRIQRbGp5pAFA5sfIFpUcyYgEksx6QN26MsRQ4NcjzGS
+	// NRIQ (no dash) confirmed by real-world finding: NRIQ_REDACTED
 	// Used with X-Query-Key header on insights-api.newrelic.com
 	{
 		Name:     "New Relic Insights Query Key (NRIQ)",
@@ -689,7 +692,7 @@ var patterns = []Pattern{
 		Severity: SevLow,
 	},
 	// PubNub Secret Key = "sec-c-" + base64(UUID) — official format is 44–48 base64
-	// chars (e.g. sec-c-OTYxNTQ2NjctNzAzMi00YzQxLWExMGItMGQ0YTgxM2VlMzc3 decodes to a
+	// chars (e.g. sec-c-REDACTED_BASE64_UUID decodes to a
 	// UUID). Charset is standard base64 (no dashes), so this won't match dashed
 	// CSS class names like "sec-c-main-header-...". Full admin / PAM access → CRITICAL.
 	{
@@ -1896,14 +1899,17 @@ var patterns = []Pattern{
 
 	// ─── Cloudflare Turnstile ─────────────────────────────────────────────────
 	{
-		Name:     "Cloudflare Turnstile Secret Key (0x3AAAA)",
-		Regex:    regexp.MustCompile(`\b0x3AAAA[A-Za-z0-9_\-]{30,}\b`),
+		Name:     "Cloudflare Turnstile Secret Key (0x4AAAA, long)",
+		Regex:    regexp.MustCompile(`\b0x[34]AAAA[A-Za-z0-9_\-]{26,}\b`),
 		Severity: SevHigh,
 	},
 	{
 		// site key is public by design (embedded in pages); mirror reCAPTCHA site key (LOW)
-		Name:     "Cloudflare Turnstile Site Key (0x4AAAA)",
-		Regex:    regexp.MustCompile(`\b0x4AAAA[A-Za-z0-9_\-]{30,}\b`),
+		Name: "Cloudflare Turnstile Site Key (0x4AAAA)",
+		// BUGFIX audit-2026-11: sitekey nyata berbentuk 0x4AAAA + 17..20 char
+		// (total 24-27, mis. 0x4AAAAAAABkMYinukE8nzY9) sehingga gate {30,} lama
+		// tidak pernah match. Secret key formatnya sama tapi lebih panjang.
+		Regex:    regexp.MustCompile(`\b0x4AAAA[A-Za-z0-9_\-]{16,25}\b`),
 		Severity: SevLow,
 	},
 
@@ -2566,7 +2572,7 @@ var patterns = []Pattern{
 		Severity: SevMedium,
 	},
 	{
-		// BUGFIX binus-2026-09: REDPER="%v$4T!9CRqE_[G-=" (kunci enkripsi custom
+		// BUGFIX binus-2026-09: REDPER="Ab9xXq2xLm" (kunci enkripsi custom
 		// untuk auth token di localStorage) — tidak ada pola key-name generik.
 		Name:       "Encryption Key in code",
 		Regex:      regexp.MustCompile(`(?i)(?:redper|enc(?:ryption)?[_\-]?(?:key|pass(?:word|phrase)?)|crypto[_\-]?key|secret[_\-]?key)["']?\s*[=:]\s*['"]([^'"\s]{6,64})['"]`),
