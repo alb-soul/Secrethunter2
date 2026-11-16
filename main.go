@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"net/url"
@@ -34,17 +35,19 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"regexp/syntax"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 const (
-	version   = "2.4.0"
+	version   = "2.5.0"
 	defaultUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 	maxBodyMB = 10
 	banner    = `
@@ -288,6 +291,16 @@ type ansiStripper struct{ w io.Writer }
 
 var reANSI = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
+// teeOut menulis ke primary (file -o) dan secondary (stdout). Hanya error
+// primary yang dikembalikan.
+type teeOut struct{ primary, secondary io.Writer }
+
+func (t teeOut) Write(p []byte) (int, error) {
+	n, err := t.primary.Write(p)
+	_, _ = t.secondary.Write(p)
+	return n, err
+}
+
 func (a ansiStripper) Write(p []byte) (int, error) {
 	if bytes.IndexByte(p, 0x1b) < 0 {
 		return a.w.Write(p)
@@ -376,7 +389,12 @@ func fetchURL(cfg *Config, rawURL string, fsCache *FSCache) (string, error) {
 		for _, h := range cfg.ExtraHeaders {
 			parts := strings.SplitN(h, ":", 2)
 			if len(parts) == 2 {
-				req.Header.Set(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+				name, val := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+				if strings.EqualFold(name, "Host") {
+					req.Host = val // net/http mengabaikan Header["Host"]
+					continue
+				}
+				req.Header.Set(name, val)
 			}
 		}
 
@@ -411,7 +429,8 @@ func fetchURL(cfg *Config, rawURL string, fsCache *FSCache) (string, error) {
 		}
 		// v3.1: body biner (NUL byte / mayoritas non-printable) tidak mungkin
 		// berisi secret tekstual — skip supaya tidak buang CPU & memicu FP.
-		if len(data) > 0 && (bytes.IndexByte(data, 0) >= 0 || printableRatio(data) < 0.5) {
+		if len(data) > 0 && (binaryContentType(resp.Header.Get("Content-Type")) ||
+			bytes.IndexByte(data, 0) >= 0 || looksBinary(string(data))) {
 			logVerbose(cfg, "[!] %s body biner — dilewati", rawURL)
 			return "", fmt.Errorf("skipped (binary body)")
 		}
@@ -464,29 +483,15 @@ func jwtAlgIsNone(token string) bool {
 	return strings.EqualFold(header.Alg, "none")
 }
 
-// ─── Keyword prefilter (v2) ────────────────────────────────────────────────────
+// ─── Literal gate ────────────────────────────────────────────────────────────
 //
-// patternPrefilter[i] = literal lowercase yang WAJIB ada di konten agar pola i
-// bisa match. Diturunkan AMAN dari regex.String() (tidak akan false-negative):
-// hanya diambil bila literal itu benar-benar prefix wajib dari match.
-
-// patternPrefilter sudah tidak dipakai di jalur panas: gate literal kini
-// diturunkan dari AST regexp (lihat patternNeeds) dan mencakup kasus prefix
-// literal maupun alternasi.
-
-// patternNeeds[i] = gate literal untuk pola i, diturunkan dari AST regexp.
-// Bentuknya DNF sederhana: AND antar-group, OR di dalam group.
-// Contoh `\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b` → satu group {akia,abia,acca,asia}
-// (match pasti mengandung salah satunya), sedangkan `foo bar` → dua group.
-// Gate ini menyumbang percepatan besar: 135 dari 448 pola sebelumnya tidak
-// punya gate sama sekali sehingga regex mahal selalu dijalankan.
+// Gate literal per pola (DNF: AND antar-group, OR di dalam group) diturunkan
+// dari AST regexp dan dicocokkan dengan satu pass Aho-Corasick — lihat engine.go.
 type needLit struct {
 	lit  string
-	fold bool // case-insensitive → cek pada contentLower
+	fold bool // case-insensitive (lit sudah lowercase ASCII)
 }
 type litGroup []needLit // OR
-
-var patternNeeds [][]litGroup
 
 // patternIndex: nama pola → urutan deklarasi. Dipakai dedupeOverlapping sebagai
 // tie-break (pola yang dideklarasikan lebih awal = keluarga yang lebih spesifik:
@@ -504,7 +509,6 @@ var genericPatterns = map[string]bool{
 	"Password assignment (pass/pwd)":                     true,
 	"URI with embedded credentials":                      true,
 	"Bearer Token in code":                               true,
-	"Bare high-entropy credentials (user:pass)":          true,
 	"Freeform credentials near keyword (user:pass)":      true,
 	"HTML comment credentials (user:pass)":               true,
 	"JS/line comment credentials (user:pass)":            true,
@@ -517,14 +521,14 @@ var genericPatterns = map[string]bool{
 
 func init() {
 	patterns = append(patterns, extraPatterns...)
-	patternNeeds = make([][]litGroup, len(patterns))
+	patterns = append(patterns, coveragePatterns2026b...)
 	patternIndex = make(map[string]int, len(patterns))
 	for i, p := range patterns {
-		patternNeeds[i] = requiredLiterals(p.Regex.String())
 		if _, dup := patternIndex[p.Name]; !dup {
 			patternIndex[p.Name] = i
 		}
 	}
+	buildEngine()
 }
 
 // betterFinding melaporkan apakah temuan a lebih disukai daripada b.
@@ -554,113 +558,6 @@ func patternIndexOf(patternName string) int {
 	return len(patterns)
 }
 
-// requiredLiterals mengekstrak gate literal wajib dari sebuah pola (kosong = tanpa gate).
-func requiredLiterals(src string) []litGroup {
-	re, err := syntax.Parse(src, syntax.Perl)
-	if err != nil {
-		return nil
-	}
-	groups, ok := requiredLits(re.Simplify())
-	if !ok || len(groups) == 0 {
-		return nil
-	}
-	return groups
-}
-
-// requiredLits mengembalikan group literal yang HARUS terpenuhi setiap match.
-// ok=false berarti subtree ini tidak bisa dijadikan gate (mis. opsional).
-func requiredLits(re *syntax.Regexp) ([]litGroup, bool) {
-	switch re.Op {
-	case syntax.OpLiteral:
-		if len(re.Rune) < 4 {
-			return nil, false
-		}
-		lit := string(re.Rune)
-		if re.Flags&syntax.FoldCase != 0 {
-			// pencocokan case-insensitive: hanya aman untuk ASCII murni
-			for _, r := range lit {
-				if r > 127 {
-					return nil, false
-				}
-			}
-			return []litGroup{{{lit: strings.ToLower(lit), fold: true}}}, true
-		}
-		return []litGroup{{{lit: lit}}}, true
-	case syntax.OpCapture, syntax.OpPlus:
-		if len(re.Sub) == 0 {
-			return nil, false
-		}
-		return requiredLits(re.Sub[0])
-	case syntax.OpRepeat:
-		if re.Min < 1 || len(re.Sub) == 0 {
-			return nil, false
-		}
-		return requiredLits(re.Sub[0])
-	case syntax.OpConcat:
-		// semua anak harus match → gabungan (AND) gate tiap anak tetap wajib
-		var out []litGroup
-		for _, sub := range re.Sub {
-			gs, ok := requiredLits(sub)
-			if !ok {
-				continue
-			}
-			out = append(out, gs...)
-		}
-		return out, true
-	case syntax.OpAlternate:
-		// setiap match memenuhi tepat satu cabang → hanya literal yang muncul
-		// di SEMUA cabang (group pertama tiap cabang) yang aman dijadikan gate.
-		if len(re.Sub) == 0 {
-			return nil, false
-		}
-		union := map[string]needLit{}
-		for _, sub := range re.Sub {
-			gs, ok := requiredLits(sub)
-			if !ok || len(gs) == 0 {
-				return nil, false
-			}
-			for _, l := range gs[0] {
-				union[l.lit] = l
-			}
-		}
-		if len(union) == 0 {
-			return nil, false
-		}
-		g := make(litGroup, 0, len(union))
-		for _, l := range union {
-			g = append(g, l)
-		}
-		sort.Slice(g, func(i, j int) bool { return g[i].lit < g[j].lit })
-		return []litGroup{g}, true
-	}
-	return nil, false
-}
-
-// prefiltersAllow melaporkan apakah pola ke-pi masih mungkin match di konten.
-func prefiltersAllow(pi int, content, contentLower string) bool {
-	for _, g := range patternNeeds[pi] {
-		ok := false
-		for _, n := range g {
-			if n.fold {
-				if strings.Contains(contentLower, n.lit) {
-					ok = true
-					break
-				}
-			} else if strings.Contains(content, n.lit) {
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return false
-		}
-	}
-	return true
-}
-
-// derivePrefilter mengembalikan substring literal wajib (lowercase) atau "".
-// Konservatif: jika ada keraguan (quantifier/alternation di ujung literal),
-// kembalikan "" agar pola tetap dijalankan (tidak melewatkan finding).
 // ─── Scanner ──────────────────────────────────────────────────────────────────
 
 type lineIndex struct{ starts []int }
@@ -709,29 +606,30 @@ var noPublicGlobal bool
 // noDecodeGlobal mematikan layer decode/obfuscation (--no-decode).
 var noDecodeGlobal bool
 var publicByDesign = map[string]bool{
-	"Stripe Live Publishable Key":                true,
-	"Midtrans Client Key (public)":               true,
-	"Langfuse Public Key (public)":               true,
-	"Flutterwave Public Key (FLWPUBK...)":        true,
-	"Omise Public Key (public)":                  true,
-	"Toss Payments Client Key (public)":          true,
-	"Wompi Public Key (public)":                  true,
-	"Paystack Public Key (context, public)":      true,
-	"Pagar.me Public Key (context, public)":      true,
-	"PayMongo Public Key (context, public)":      true,
-	"Culqi Public Key (context, public)":         true,
-	"Clerk Publishable Key (pk_live_/pk_test_)":  true,
-	"PubNub Subscribe Key":                       true,
-	"Google reCAPTCHA Site Key":                  true,
-	"Mapbox Public Token":                        true,
-	"Mapbox Temporary Token":                     true,
-	"Algolia Search-Only API Key":                true,
-	"Supabase Publishable Key (sb_publishable_)": true,
-	"PostHog Project API Key (phc_)":             true,
-	"Segment Write Key (context)":                true,
-	"Amplitude API Key":                          true,
-	"Firebase API Key / Config":                  true,
-	"Cloudflare Turnstile Site Key (0x4AAAA)":    true,
+	"Stripe Live Publishable Key":                       true,
+	"Midtrans Client Key (public)":                      true,
+	"Langfuse Public Key (public)":                      true,
+	"Flutterwave Public Key (FLWPUBK...)":               true,
+	"Omise Public Key (public)":                         true,
+	"Toss Payments Client Key (public)":                 true,
+	"Wompi Public Key (public)":                         true,
+	"Paystack Public Key (context, public)":             true,
+	"Pagar.me Public Key (context, public)":             true,
+	"PayMongo Public Key (context, public)":             true,
+	"Culqi Public Key (context, public)":                true,
+	"Clerk Publishable Key (pk_live_/pk_test_)":         true,
+	"PubNub Subscribe Key":                              true,
+	"Google reCAPTCHA Site Key":                         true,
+	"Mapbox Public Token":                               true,
+	"Mapbox Temporary Token":                            true,
+	"Algolia Search-Only API Key":                       true,
+	"Supabase Publishable Key (sb_publishable_)":        true,
+	"PostHog Project API Key (phc_)":                    true,
+	"Segment Write Key (context)":                       true,
+	"Amplitude API Key":                                 true,
+	"Firebase API Key / Config":                         true,
+	"Cloudflare Turnstile Site Key (0x4AAAA)":           true,
+	"Shopify Storefront Access Token (context, public)": true,
 }
 
 // ─── Scanner v3 (parallel-aware) ─────────────────────────────────────────────
@@ -1065,8 +963,7 @@ func decodedVariants(content string) []string {
 }
 
 func scanContent(rawURL, content string) []Finding {
-	contentLower := strings.ToLower(content) // v3/v2: sekali, untuk prefilter
-	base := scanSingle(rawURL, content, contentLower)
+	base := scanSingle(rawURL, content)
 	if noDecodeGlobal {
 		return dedupeOverlapping(base)
 	}
@@ -1080,7 +977,7 @@ func scanContent(rawURL, content string) []Finding {
 	}
 	out := base
 	for _, v := range vars {
-		for _, f := range scanSingle(rawURL, v, strings.ToLower(v)) {
+		for _, f := range scanSingle(rawURL, v) {
 			if _, dup := seen[f.Pattern+"\x00"+f.Match]; dup {
 				continue
 			}
@@ -1148,142 +1045,287 @@ func dedupeOverlapping(in []Finding) []Finding {
 	return out
 }
 
-func scanSingle(rawURL, content, contentLower string) []Finding {
+// scanSingle memindai satu teks: satu pass Aho-Corasick (engine.go) lalu regex
+// per pola (window/full). Body ≥1 MB: pola dibagi ke beberapa goroutine.
+func scanSingle(rawURL, content string) []Finding {
 	if len(content) >= parallelScanMinBytes && len(patterns) > 1 {
-		return scanContentPar(rawURL, content, contentLower)
+		return scanContentPar(rawURL, content)
 	}
-	return scanContentSeq(rawURL, content, contentLower)
+	return scanContentSeq(rawURL, content)
 }
 
-func scanContentSeq(rawURL, content, contentLower string) []Finding {
-	var findings []Finding
-	li := buildLineIndex(content)
+func scanContentSeq(rawURL, content string) []Finding {
+	occ := engAC.find(content)
+	defer occ.release()
+	return mergeCandidates(rawURL, content, [][]patternCandidate{collectCandidates(content, occ, 0, len(patterns))})
+}
 
-	for pi, p := range patterns {
-		// v2: prefilter murah sebelum regex mahal
-		if !prefiltersAllow(pi, content, contentLower) {
-			continue
-		}
-		locs := p.Regex.FindAllStringSubmatchIndex(content, -1)
-		for _, loc := range locs {
-			var startPos, endPos int
-			if p.MatchGroup == 0 {
-				startPos, endPos = loc[0], loc[1]
-			} else {
-				gi := 2 * p.MatchGroup
-				if gi+1 >= len(loc) || loc[gi] < 0 {
-					continue
-				}
-				startPos, endPos = loc[gi], loc[gi+1]
-			}
-			match := content[startPos:endPos]
-			if match == "" {
-				continue
-			}
-			// v3.1: dedupe by teks-match dipindah ke dedupeOverlapping() (satu tempat)
-			// agar pola kontekstual tidak kalah oleh pola generik yang match lebih dulu.
-			if len(match) < 6 {
-				continue
-			}
-			if isPlaceholder(match) {
-				continue
-			}
-			lineNum := li.lineAt(startPos)
-			lt := li.lineTextOf(content, lineNum)
-			if dropFinding(&p, match, lt) {
-				continue
-			}
-			if p.Name == "Twitter/X Bearer Token" || strings.HasPrefix(p.Name, "Square") {
-				if strings.Contains(lt, "base64,") || strings.Contains(lt, "data:") {
-					continue
-				}
-			}
-			if standaloneTokenPatterns[p.Name] && isBase64Slice(content, startPos, endPos) {
-				continue
-			}
-			if humanCredPatterns[p.Name] && isHumanCredFP(p.Name, match, lt) {
-				continue
-			}
-			patternName := p.Name
-			severity := p.Severity
-			if publicByDesign[p.Name] {
-				if noPublicGlobal {
-					continue
-				}
-				severity = SevInfo
-			}
-			if p.Name == "JSON Web Token (JWT)" {
-				if jwtAlgIsNone(match) {
-					patternName = "JWT with alg:none (Forgeable — Auth Bypass)"
-					severity = SevCritical
-				} else {
-					severity = SevLow
-				}
-			}
-			findings = append(findings, Finding{
-				URL:      rawURL,
-				Pattern:  patternName,
-				Match:    match,
-				Severity: severity,
-				Line:     lineNum,
-			})
+// finalizeCandidate menjalankan seluruh guard pasca-regex untuk satu kandidat
+// match dan mengembalikan Finding final. Satu-satunya implementasi (dipakai
+// jalur serial, paralel, dan windowed) supaya perilakunya identik.
+func finalizeCandidate(rawURL, content string, li *lineIndex, pi, startPos, endPos int) (Finding, bool) {
+	p := &patterns[pi]
+	match := content[startPos:endPos]
+	// v3.1: dedupe by teks-match dipindah ke dedupeOverlapping() (satu tempat)
+	// agar pola kontekstual tidak kalah oleh pola generik yang match lebih dulu.
+	if len(match) < 6 || isPlaceholder(match) || credPlaceholderWords[strings.ToLower(match)] {
+		return Finding{}, false
+	}
+	// audit-2026-11b: pola konteks `…([A-Za-z0-9]{40})['"]?` (penutup opsional)
+	// bisa mengambil 40 char PERTAMA dari token yang lebih panjang (mis. `bkua_…`
+	// 45 char → nilai terpotong yang lalu menang dedupe). Capture group yang
+	// berakhir di tengah run alfanumerik = nilai terpotong → buang.
+	if p.MatchGroup > 0 && endPos < len(content) && isAlnumByte(content[endPos]) && isAlnumByte(content[endPos-1]) {
+		return Finding{}, false
+	}
+	lineNum := li.lineAt(startPos)
+	lt := li.lineTextOf(content, lineNum)
+	if dropFinding(p, match, lt) {
+		return Finding{}, false
+	}
+	if p.Name == "Twitter/X Bearer Token" || strings.HasPrefix(p.Name, "Square") {
+		if strings.Contains(lt, "base64,") || strings.Contains(lt, "data:") {
+			return Finding{}, false
 		}
 	}
-	return findings
+	if standaloneTokenPatterns[p.Name] && isBase64Slice(content, startPos, endPos) {
+		return Finding{}, false
+	}
+	if identifierPronePatterns[p.Name] && looksLikeIdentifier(match) {
+		return Finding{}, false
+	}
+	if basicAuthPatterns[p.Name] && !basicAuthValid(match) {
+		return Finding{}, false
+	}
+	if humanCredPatterns[p.Name] && isHumanCredFP(p.Name, match, lt) {
+		return Finding{}, false
+	}
+	patternName := p.Name
+	severity := p.Severity
+	if publicByDesign[p.Name] {
+		if noPublicGlobal {
+			return Finding{}, false
+		}
+		severity = SevInfo
+	}
+	if p.Name == "JSON Web Token (JWT)" {
+		patternName, severity = classifyJWT(match)
+		if severity == SevInfo && noPublicGlobal {
+			return Finding{}, false
+		}
+	}
+	return Finding{
+		URL:      rawURL,
+		Pattern:  patternName,
+		Match:    match,
+		Severity: severity,
+		Line:     lineNum,
+	}, true
+}
+
+// identifierPronePatterns: token berprefiks pendek/generik (re_, rnd_, pa-, fc-, …)
+// yang prefiksnya juga lazim sebagai awalan identifier snake/kebab-case di bundle
+// JS/CSS (`re_render_component`, `pa-container-wrapper`). Token asli berisi
+// karakter acak base62 sehingga hampir pasti memuat digit atau huruf campuran.
+var identifierPronePatterns = map[string]bool{
+	"Resend API Key (re_)":                             true,
+	"Render API Key (rnd_)":                            true,
+	"Xata API Key (xau_)":                              true,
+	"Jina AI API Key (jina_)":                          true,
+	"Voyage AI API Key (pa-)":                          true,
+	"Cerebras API Key (csk-)":                          true,
+	"NVIDIA NIM API Key (nvapi-)":                      true,
+	"Fireworks AI Key (fw_)":                           true,
+	"Tavily API Key (tvly-)":                           true,
+	"Firecrawl API Key (fc-)":                          true,
+	"LlamaCloud / LlamaIndex Key (llx-)":               true,
+	"Apify API Token (apify_api_)":                     true,
+	"n8n Personal API Key (n8n_api_)":                  true,
+	"RunPod API Key (rpa_)":                            true,
+	"Honeybadger API Key (hbp_)":                       true,
+	"Weglot API Key":                                   true,
+	"Mailgun Private API Key":                          true,
+	"Mailgun Public API Key":                           true,
+	"crates.io API Token (cio)":                        true,
+	"Typeform Personal Token (tfp_)":                   true,
+	"Docker Hub Personal Access Token (dckr_pat_)":     true,
+	"Cal.com API Key (cal_live/cal_test)":              true,
+	"Grafana Cloud Access Policy Token (glc_)":         true,
+	"Axiom.co Dataset Token (xaat-)":                   true,
+	"GitLab OAuth App Secret (gloas-)":                 true,
+	"GitLab Pipeline Trigger Token (glptt-)":           true,
+	"GitLab Feed Token (glfeed-)":                      true,
+	"Figma Access Token (figd_/figu_/figr_)":           true,
+	"Pinecone API Key (pcsk_)":                         true,
+	"Ory API Key (ory_pat_/ory_apikey_/ory_wak_)":      true,
+	"Supabase Publishable Key (sb_publishable_)":       true,
+	"Supabase Secret Key (sb_secret_)":                 true,
+	"PostHog Personal API Key (phx_)":                  true,
+	"PostHog Project API Key (phc_)":                   true,
+	"Vercel Access Token (vcp_)":                       true,
+	"Stytch Live Secret (secret-live-)":                true,
+	"Stytch Test Secret (secret-test-)":                true,
+	"PlanetScale Service Token (pscale_tkn_)":          true,
+	"PlanetScale DB Password (pscale_pw_)":             true,
+	"PlanetScale OAuth Token (pscale_oauth_)":          true,
+	"Vault Service Token (hvs.)":                       true,
+	"Vault Batch Token (hvb.)":                         true,
+	"Vault Recovery Token (hvr.)":                      true,
+	"Midtrans Server Key":                              true,
+	"Midtrans Client Key (public)":                     true,
+	"Mercado Pago Credential (APP_USR-)":               true,
+	"Omise Secret Key":                                 true,
+	"Omise Public Key (public)":                        true,
+	"Toss Payments Secret Key":                         true,
+	"Toss Payments Client Key (public)":                true,
+	"Wompi Private Key":                                true,
+	"Wompi Integrity/Events Secret":                    true,
+	"Wompi Public Key (public)":                        true,
+	"Vercel Blob Read-Write Token":                     true,
+	"WorkOS Secret Key (sk_test/sk_prod/sk_live)":      true,
+	"Netlify Personal Access Token (nfp_)":             true,
+	"Sentry Auth Token (sntrys_/sntryu_)":              true,
+	"Tailscale Auth/API Key (tskey-)":                  true,
+	"GitLab Runner Authentication Token (glrt-)":       true,
+	"GitLab Agent Token (glagent-)":                    true,
+	"AWS AppSync API Key (da2-)":                       true,
+	"Docker Hub Organization Access Token (dckr_oat_)": true,
+}
+
+// looksLikeIdentifier: bagian SETELAH prefix tanpa digit DAN huruf satu jenis
+// (semua kecil / semua besar) → identifier/kata (snake/kebab-case), bukan token
+// acak. Prefix (s.d. separator pertama dalam 12 char) diabaikan supaya digit di
+// prefix seperti `da2-`/`n8n_` tidak menyamarkan identifier.
+func looksLikeIdentifier(m string) bool {
+	for i := 0; i < len(m) && i < 12; i++ {
+		if c := m[i]; c == '-' || c == '_' || c == '.' || c == ':' {
+			m = m[i+1:]
+			break
+		}
+	}
+	var digit, up, low bool
+	for i := 0; i < len(m); i++ {
+		c := m[i]
+		switch {
+		case c >= '0' && c <= '9':
+			digit = true
+		case c >= 'A' && c <= 'Z':
+			up = true
+		case c >= 'a' && c <= 'z':
+			low = true
+		}
+	}
+	return !digit && !(up && low)
+}
+
+// basicAuthPatterns: nilai = base64(user:pass); divalidasi dengan decode.
+var basicAuthPatterns = map[string]bool{
+	"Authorization: Basic header":         true,
+	"Basic Auth Token in code":            true,
+	"Docker config.json auth (base64)":    true,
+	"npm legacy _auth (base64 user:pass)": true,
+}
+
+// basicAuthValid: base64 harus ter-decode menjadi teks printable (UTF-8 valid,
+// tanpa karakter kontrol). Umumnya `user:pass`, tapi ':' TIDAK diwajibkan —
+// kasus nyata (binus-2026-09) memakai `Basic base64(UUID)`. Yang ditolak:
+// base64 yang ter-decode menjadi biner (nonce, hash, id acak).
+func basicAuthValid(b64 string) bool {
+	s := strings.TrimSpace(b64)
+	raw, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		raw, err = base64.RawStdEncoding.DecodeString(strings.TrimRight(s, "="))
+		if err != nil {
+			return false
+		}
+	}
+	if len(raw) < 4 || !utf8.Valid(raw) {
+		return false
+	}
+	for _, r := range string(raw) {
+		if r < 32 || r == 0x7f || r == utf8.RuneError {
+			return false
+		}
+	}
+	return true
+}
+
+// classifyJWT menentukan nama & severity temuan JWT dari header/payload:
+// alg:none → CRITICAL; Supabase service_role → CRITICAL (bypass RLS);
+// Supabase anon → INFO (publik by design); lainnya LOW.
+func classifyJWT(token string) (string, string) {
+	if jwtAlgIsNone(token) {
+		return "JWT with alg:none (Forgeable — Auth Bypass)", SevCritical
+	}
+	claims := jwtClaims(token)
+	role, _ := claims["role"].(string)
+	iss, _ := claims["iss"].(string)
+	switch {
+	case role == "service_role":
+		return "Supabase Service Role Key (JWT role=service_role)", SevCritical
+	case role == "anon" && strings.Contains(strings.ToLower(iss), "supabase"):
+		return "Supabase Anon Key (JWT, public)", SevInfo
+	}
+	return "JSON Web Token (JWT)", SevLow
+}
+
+func jwtClaims(token string) map[string]any {
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) < 2 {
+		return nil
+	}
+	seg := strings.TrimRight(parts[1], "=")
+	raw, err := base64.RawURLEncoding.DecodeString(seg)
+	if err != nil {
+		return nil
+	}
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	return m
 }
 
 // collectCandidates menjalankan regex untuk rentang pattern [s,e) dan
 // mengembalikan kandidat mentah (belum di-filter / dedup global).
-func collectCandidates(content, contentLower string, s, e int) []patternCandidate {
+func collectCandidates(content string, occ *occTable, s, e int) []patternCandidate {
 	var out []patternCandidate
 	for pi := s; pi < e; pi++ {
-		p := &patterns[pi]
-		if !prefiltersAllow(pi, content, contentLower) {
-			continue
-		}
-		if p.MatchGroup == 0 {
-			for _, loc := range p.Regex.FindAllStringIndex(content, -1) {
-				if loc[1] > loc[0] {
-					out = append(out, patternCandidate{pi: pi, startPos: loc[0], endPos: loc[1]})
-				}
-			}
-		} else {
-			for _, loc := range p.Regex.FindAllStringSubmatchIndex(content, -1) {
-				gi := 2 * p.MatchGroup
-				if gi+1 >= len(loc) || loc[gi] < 0 {
-					continue
-				}
-				if loc[gi+1] > loc[gi] {
-					out = append(out, patternCandidate{pi: pi, startPos: loc[gi], endPos: loc[gi+1]})
-				}
-			}
-		}
+		out = patternCandidates(pi, content, occ, out)
 	}
 	return out
 }
 
-func scanContentPar(rawURL, content, contentLower string) []Finding {
+// scanContentPar: body besar — pola dibagikan dinamis (work-stealing lewat
+// counter atomik) karena biaya per pola sangat timpang (window vs full scan).
+// Kandidat disimpan per indeks pola lalu digabung berurutan → hasil identik
+// dengan versi serial.
+func scanContentPar(rawURL, content string) []Finding {
+	occ := engAC.find(content)
+	defer occ.release()
 	np := len(patterns)
 	workers := parallelScanWorkers
-	if workers > np {
-		workers = np
+	if n := runtime.GOMAXPROCS(0); workers > n {
+		workers = n
 	}
-	groups := make([][]patternCandidate, workers)
+	perPat := make([][]patternCandidate, np)
+	var next atomic.Int32
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
-		s := w * np / workers
-		e := (w + 1) * np / workers
-		if s >= e {
-			continue
-		}
 		wg.Add(1)
-		go func(w, s, e int) {
+		go func() {
 			defer wg.Done()
-			groups[w] = collectCandidates(content, contentLower, s, e)
-		}(w, s, e)
+			for {
+				pi := int(next.Add(1)) - 1
+				if pi >= np {
+					return
+				}
+				perPat[pi] = patternCandidates(pi, content, occ, nil)
+			}
+		}()
 	}
 	wg.Wait()
-	return mergeCandidates(rawURL, content, groups)
+	return mergeCandidates(rawURL, content, perPat)
 }
 
 // mergeCandidates meniru persis post-processing serial dan menjaga total order:
@@ -1301,55 +1343,9 @@ func mergeCandidates(rawURL, content string, groups [][]patternCandidate) []Find
 	var findings []Finding
 	for _, g := range groups {
 		for _, c := range g {
-			match := content[c.startPos:c.endPos]
-			// v3.1: dedupe by teks-match dipindah ke dedupeOverlapping() (satu tempat)
-			// agar pola kontekstual tidak kalah oleh pola generik yang match lebih dulu.
-			if len(match) < 6 {
-				continue
+			if f, ok := finalizeCandidate(rawURL, content, li, c.pi, c.startPos, c.endPos); ok {
+				findings = append(findings, f)
 			}
-			if isPlaceholder(match) {
-				continue
-			}
-			p := &patterns[c.pi]
-			lineNum := li.lineAt(c.startPos)
-			lt := li.lineTextOf(content, lineNum)
-			if dropFinding(p, match, lt) {
-				continue
-			}
-			if p.Name == "Twitter/X Bearer Token" || strings.HasPrefix(p.Name, "Square") {
-				if strings.Contains(lt, "base64,") || strings.Contains(lt, "data:") {
-					continue
-				}
-			}
-			if standaloneTokenPatterns[p.Name] && isBase64Slice(content, c.startPos, c.endPos) {
-				continue
-			}
-			if humanCredPatterns[p.Name] && isHumanCredFP(p.Name, match, lt) {
-				continue
-			}
-			patternName := p.Name
-			severity := p.Severity
-			if publicByDesign[p.Name] {
-				if noPublicGlobal {
-					continue
-				}
-				severity = SevInfo
-			}
-			if p.Name == "JSON Web Token (JWT)" {
-				if jwtAlgIsNone(match) {
-					patternName = "JWT with alg:none (Forgeable — Auth Bypass)"
-					severity = SevCritical
-				} else {
-					severity = SevLow
-				}
-			}
-			findings = append(findings, Finding{
-				URL:      rawURL,
-				Pattern:  patternName,
-				Match:    match,
-				Severity: severity,
-				Line:     lineNum,
-			})
 		}
 	}
 	return findings
@@ -1389,7 +1385,8 @@ var standaloneTokenPatterns = map[string]bool{
 	"Slack App-level Token (xapp-)":                    true,
 	"Slack OAuth v2 Token (xoxe-)":                     true,
 	"Square Access Token":                              true,
-	"Square App ID / Client Secret":                    true,
+	"Square OAuth Client Secret (sq0csp-)":             true,
+	"Square Application ID (sq0idp-)":                  true,
 	"Square Sandbox Token":                             true,
 	"Twitter/X Bearer Token":                           true,
 	"Twilio Account SID":                               true,
@@ -1477,14 +1474,16 @@ var standaloneTokenPatterns = map[string]bool{
 	"PlanetScale OAuth Token (pscale_oauth_)":          true,
 	"Supabase Publishable Key (sb_publishable_)":       true,
 	"Supabase Secret Key (sb_secret_)":                 true,
-	"Clerk Secret Key (sk_live_/sk_test_)":             true,
+	"Clerk Secret Key (sk_live_)":                      true,
+	"Clerk Secret Key (sk_test_)":                      true,
 	"Clerk Publishable Key (pk_live_/pk_test_)":        true,
 	"WorkOS Secret Key (sk_test/sk_prod/sk_live)":      true,
 	"Cal.com API Key (cal_live/cal_test)":              true,
 	"SendGrid API Key":                                 true,
 	"Brevo API Key (xkeysib-)":                         true,
 	"Brevo SMTP Key (xsmtpsib-)":                       true,
-	"Flutterwave Secret/Public Key (FLW...-X)":         true,
+	"Flutterwave Secret Key (FLWSECK...)":              true, // audit-2026-11b: nama lama salah ketik → guard tak aktif
+	"Flutterwave Public Key (FLWPUBK...)":              true,
 	"Shippo API Key":                                   true,
 	"Typeform Personal Token (tfp_)":                   true,
 	"Adafruit IO Key (aio_)":                           true,
@@ -1507,7 +1506,8 @@ var standaloneTokenPatterns = map[string]bool{
 	"Salesforce Access Token":                          true,
 	"Yandex API Key (AQVN)":                            true,
 	"ClickUp Personal Token (pk_<id>_)":                true,
-	"Stytch Secret (secret-live/test-)":                true,
+	"Stytch Live Secret (secret-live-)":                true,
+	"Stytch Test Secret (secret-test-)":                true,
 	"crates.io API Token (cio)":                        true,
 	"Cloudflare Turnstile Secret Key (0x4AAAA, long)":  true,
 	"Cloudflare Turnstile Site Key (0x4AAAA)":          true,
@@ -1523,7 +1523,6 @@ var standaloneTokenPatterns = map[string]bool{
 	"Supabase Service Role Key":                        true,
 	"Slack Webhook URL":                                true,
 	"Mailchimp API Key":                                true,
-	"Telegram Bot API Token":                           true,
 	"Microsoft Teams Webhook":                          true,
 	"Azure SAS Token":                                  true,
 	"Asana Personal Access Token":                      true,
@@ -1533,6 +1532,22 @@ var standaloneTokenPatterns = map[string]bool{
 	"Ghost Admin API Key (id:secret)":                  true,
 	"DeepL API Key (free :fx)":                         true,
 	"Honeybadger API Key (hbp_)":                       true,
+	// audit-2026-11b (patterns_2026b.go)
+	"Anthropic OAuth Token (sk-ant-oat01-/ort01-)":     true,
+	"OpenAI Admin Key (sk-admin-)":                     true,
+	"Hugging Face Org Token (api_org_)":                true,
+	"Prefect API Key (pnu_)":                           true,
+	"Cloudflare API Token (cfut_/cfat_/cfk_)":          true,
+	"Heroku API Key v2 (HRKU-)":                        true,
+	"CircleCI Personal API Token (CCIPAT_)":            true,
+	"Buildkite User Access Token (bkua_)":              true,
+	"Contentful Personal Access Token (CFPAT-)":        true,
+	"PayPal OAuth Access Token (A21AA)":                true,
+	"New Relic Insert Key (NRII-)":                     true,
+	"MailerSend API Token (mlsn.)":                     true,
+	"GitLab Runner Authentication Token (glrt-)":       true,
+	"GitLab Agent Token (glagent-)":                    true,
+	"Docker Hub Organization Access Token (dckr_oat_)": true,
 }
 
 // isBase64Slice reports whether the match at [startPos,endPos) is a slice of a
@@ -1565,11 +1580,16 @@ func isBase64Slice(content string, startPos, endPos int) bool {
 	}
 	if endPos < len(content) {
 		if c := content[endPos]; isB64(c) || c == '=' {
+			// BUGFIX audit-2026-11b: dulu menghitung karakter b64 di jendela 128
+			// char secara TIDAK kontigu, sehingga token yang diikuti `/path");
+			// hook="https://…` (teks biasa) dianggap potongan blob dan dibuang.
+			// Yang menandai blob adalah RUN kontigu yang panjang.
 			n := 0
-			for i := endPos; i < len(content) && i < endPos+128; i++ {
-				if isB64(content[i]) || content[i] == '=' {
-					n++
+			for i := endPos; i < len(content) && n < 64; i++ {
+				if !isB64(content[i]) && content[i] != '=' {
+					break
 				}
+				n++
 			}
 			if n >= 64 {
 				return true
@@ -1994,20 +2014,51 @@ func hasMixedCase(s string) bool {
 	return lower && upper
 }
 
+// placeholderWords: substring yang menandai nilai contoh/dokumentasi. Kata ≥5
+// huruf hampir mustahil muncul kebetulan di token acak, jadi cukup substring.
+var placeholderWords = []string{
+	"your_", "yourkey", "yourapikey", "your-api", "example",
+	"changeme", "replace", "xxxxxxxx", "aaaaaaaa", "11111111",
+	"00000000", "test123", "password123", "secret123",
+	"<api", "api_key>", "token>", "{api", "{key", "${",
+	"xxxx", "yyyy", "zzzz", "undefined",
+	"placeholder", "insert_", "insert-", "redacted", "dummy",
+	"sample", "lorem", "qwerty", "abc123", "string", "fixme",
+}
+
+// placeholderShortWords: kata 4 huruf yang ±1/1000 token base62 acak
+// memuatnya secara kebetulan (BUGFIX audit-2026-11b: dulu substring → key asli
+// seperti `…xNuLl7…` dibuang). Kini hanya placeholder bila berdiri sebagai
+// segmen: diapit non-alfanumerik / awal / akhir (`sk_live_none`, `TODO-key`).
+var placeholderShortWords = []string{"none", "null", "todo", "asdf"}
+
+func isAlnumByte(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+}
+
+func containsSegment(lower, w string) bool {
+	for i := 0; ; {
+		j := strings.Index(lower[i:], w)
+		if j < 0 {
+			return false
+		}
+		s, e := i+j, i+j+len(w)
+		if (s == 0 || !isAlnumByte(lower[s-1])) && (e == len(lower) || !isAlnumByte(lower[e])) {
+			return true
+		}
+		i = s + 1
+	}
+}
+
 func isPlaceholder(s string) bool {
 	lower := strings.ToLower(s)
-	placeholders := []string{
-		"your_", "yourkey", "yourapikey", "your-api", "example",
-		"changeme", "replace", "xxxxxxxx", "aaaaaaaa", "11111111",
-		"00000000", "test123", "password123", "secret123",
-		"<api", "api_key>", "token>", "{api", "{key", "${",
-		"xxxx", "yyyy", "zzzz", "none", "undefined", "null",
-		"placeholder", "insert_", "insert-", "redacted", "dummy",
-		"sample", "lorem", "asdf", "qwerty", "abc123", "string",
-		"todo", "fixme",
-	}
-	for _, p := range placeholders {
+	for _, p := range placeholderWords {
 		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	for _, w := range placeholderShortWords {
+		if containsSegment(lower, w) {
 			return true
 		}
 	}
@@ -2183,48 +2234,204 @@ func crawlScripts(cfg *Config, pageURL, content string, rl *RateLimiter, fsCache
 // ─── httpx JSONL mode (v2, body-reuse) ─────────────────────────────────────────
 
 type httpxRecord struct {
-	URL        string `json:"url"`
-	StatusCode int    `json:"status_code"`
-	Body       string `json:"body"`
-	RawHeader  string `json:"raw_header"`
+	URL         string          `json:"url"`
+	StatusCode  int             `json:"status_code"`
+	Body        string          `json:"body"`
+	RawHeader   string          `json:"raw_header"`
+	Header      json.RawMessage `json:"header"` // map ternormalisasi httpx (fallback bila raw_header kosong)
+	ContentType string          `json:"content_type"`
 }
 
-type jsonJob struct{ url, body string }
+type jsonJob struct{ url, body, header string }
 
-// hostInScope: host == scope atau *.scope
+// hostInScope: host == scope atau *.scope (case-insensitive, abaikan titik akhir,
+// scope boleh ditulis sebagai URL).
 func hostInScope(rawURL, scope string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return false
 	}
-	host := strings.ToLower(u.Hostname())
-	scope = strings.ToLower(strings.TrimPrefix(scope, "*."))
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	scope = strings.ToLower(strings.TrimSpace(scope))
+	if strings.Contains(scope, "://") {
+		if su, err := url.Parse(scope); err == nil {
+			scope = su.Hostname()
+		}
+	}
+	scope = strings.TrimSuffix(strings.TrimPrefix(scope, "*."), ".")
+	if host == "" || scope == "" {
+		return false
+	}
 	return host == scope || strings.HasSuffix(host, "."+scope)
 }
 
+// headerMapText meratakan field `header` httpx (map[string]string|[]string) menjadi
+// teks "k: v" per baris. Dipakai hanya bila raw_header tidak ada.
+func headerMapText(raw json.RawMessage) string {
+	if len(raw) == 0 || raw[0] != '{' {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return ""
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		switch v := m[k].(type) {
+		case string:
+			b.WriteString(k + ": " + v + "\n")
+		case []any:
+			for _, e := range v {
+				if s, ok := e.(string); ok {
+					b.WriteString(k + ": " + s + "\n")
+				}
+			}
+		}
+	}
+	return b.String()
+}
+
+// binaryContentType: tipe konten yang tidak mungkin memuat secret tekstual.
+func binaryContentType(ct string) bool {
+	ct = strings.ToLower(strings.TrimSpace(ct))
+	if ct == "" || strings.Contains(ct, "svg") {
+		return false
+	}
+	for _, p := range []string{"image/", "font/", "audio/", "video/", "application/octet-stream",
+		"application/zip", "application/gzip", "application/x-gzip", "application/pdf",
+		"application/wasm", "application/x-font", "application/font", "application/vnd.ms-fontobject",
+		"application/x-shockwave-flash", "application/x-7z", "application/x-rar", "application/x-tar"} {
+		if strings.HasPrefix(ct, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// looksBinary memeriksa 64 KB pertama: NUL byte, atau >10% rune tidak valid /
+// U+FFFD (body biner yang dijadikan string oleh httpx) / kontrol. UTF-8 valid
+// (CJK, emoji) dihitung sebagai teks — versi lama menghitung byte ≥0x80 sebagai
+// non-printable sehingga halaman Jepang/Cina bisa dilewati sebagai "biner".
+func looksBinary(s string) bool {
+	n := len(s)
+	if n > 64<<10 {
+		n = 64 << 10
+	}
+	sample := s[:n]
+	if strings.IndexByte(sample, 0) >= 0 {
+		return true
+	}
+	bad, total := 0, 0
+	for i := 0; i < len(sample); {
+		r, size := utf8.DecodeRuneInString(sample[i:])
+		switch {
+		case r == utf8.RuneError && size <= 1:
+			if n < len(s) && len(sample)-i < utf8.UTFMax {
+				i = len(sample) // rune terpotong di batas sampel
+				continue
+			}
+			bad++
+		case r == utf8.RuneError:
+			bad++ // U+FFFD literal
+		case r < 32 && r != '\n' && r != '\r' && r != '\t' && r != '\f':
+			bad++
+		}
+		total++
+		i += size
+	}
+	return total > 0 && bad*10 > total
+}
+
+// forEachLine memanggil fn untuk setiap baris tak-kosong. Baris yang melebihi
+// maxLine DILEWATI (dihitung) — pembacaan berlanjut ke baris berikutnya.
+// BUGFIX audit-2026-11b: bufio.Scanner lama berhenti total pada ErrTooLong
+// sehingga semua record setelah satu baris raksasa tidak pernah di-scan.
+func forEachLine(r io.Reader, maxLine int, stop <-chan struct{}, fn func([]byte)) (skipped int, err error) {
+	br := bufio.NewReaderSize(r, 1<<20)
+	buf := make([]byte, 0, 1<<20)
+	tooLong := false
+	for {
+		select {
+		case <-stop:
+			return skipped, nil
+		default:
+		}
+		frag, e := br.ReadSlice('\n')
+		if !tooLong {
+			if len(buf)+len(frag) > maxLine {
+				tooLong = true
+				buf = buf[:0]
+			} else {
+				buf = append(buf, frag...)
+			}
+		}
+		if e == bufio.ErrBufferFull {
+			continue
+		}
+		if tooLong {
+			skipped++
+		} else if line := bytes.TrimSpace(buf); len(line) > 0 {
+			fn(line)
+		}
+		if cap(buf) > 16<<20 {
+			buf = make([]byte, 0, 1<<20) // lepas buffer baris raksasa
+		} else {
+			buf = buf[:0]
+		}
+		tooLong = false
+		if e != nil {
+			if e == io.EOF {
+				return skipped, nil
+			}
+			return skipped, e
+		}
+	}
+}
+
+// scanRecord memindai body dan header secara terpisah (tanpa menyalin body
+// 10 MB hanya untuk menempelkan header) lalu menggabung + dedupe.
+func scanRecord(rawURL, body, header string) []Finding {
+	out := scanContent(rawURL, body)
+	if header != "" {
+		out = append(out, scanContent(rawURL, header)...)
+		out = dedupeOverlapping(out)
+	}
+	return out
+}
+
 // scanHTTPXJSON membaca JSONL httpx (-json -irr) dan men-scan body tanpa fetch.
-func scanHTTPXJSON(cfg *Config, outWriter io.Writer, js *jsonStream, stats *outputStats) {
+// Streaming: hanya satu record yang di-decode oleh producer, worker menahan
+// maksimal satu record masing-masing (channel tanpa buffer).
+func scanHTTPXJSON(cfg *Config, outWriter io.Writer, js *jsonStream, stats *outputStats) error {
 	f, err := os.Open(cfg.HTTPXJSON)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening httpx-json: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("opening httpx-json: %w", err)
 	}
 	defer f.Close()
 
-	jobs := make(chan jsonJob, cfg.Threads)
+	// Mode ini murni CPU-bound (tanpa jaringan): worker > jumlah CPU hanya
+	// menambah memori (tiap worker memegang body s/d 10 MB + salinannya).
+	workers := cfg.Threads
+	if ncpu := runtime.GOMAXPROCS(0); workers > ncpu {
+		logVerbose(cfg, "[httpx-json] -t %d dibatasi ke %d worker (CPU-bound)", workers, ncpu)
+		workers = ncpu
+	}
+
+	jobs := make(chan jsonJob)
 	results := make(chan Finding, 500)
 
 	var wg sync.WaitGroup
-	for i := 0; i < cfg.Threads; i++ {
+	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for j := range jobs {
-				body := j.body
-				if int64(len(body)) > cfg.MaxBodyBytes {
-					body = body[:cfg.MaxBodyBytes]
-				}
-				for _, fd := range scanContent(j.url, body) {
+				for _, fd := range scanRecord(j.url, j.body, j.header) {
 					results <- fd
 				}
 			}
@@ -2239,41 +2446,79 @@ func scanHTTPXJSON(cfg *Config, outWriter io.Writer, js *jsonStream, stats *outp
 		}
 	}()
 
-	// Producer: baca JSONL baris demi baris (buffer besar utk body inline)
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024) // s/d 64MB per baris
-	count := 0
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
+	stop := make(chan struct{})
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	go func() {
+		if _, ok := <-sigCh; !ok {
+			return
 		}
+		logWarn(cfg, "Interrupted — menyelesaikan record yang sedang diproses lalu flush (Ctrl-C lagi = paksa keluar)...")
+		interrupted.Store(true)
+		close(stop)
+		if _, ok := <-sigCh; ok {
+			os.Exit(130)
+		}
+	}()
+
+	// Batas satu baris JSONL: body s/d MaxBodyBytes bisa membengkak ±6× saat
+	// di-escape JSON (\u00XX), plus header/request.
+	maxLine := int(8*cfg.MaxBodyBytes) + (4 << 20)
+	if maxLine < 64<<20 {
+		maxLine = 64 << 20
+	}
+	count, bad, binSkip := 0, 0, 0
+	skipped, rerr := forEachLine(f, maxLine, stop, func(line []byte) {
 		var rec httpxRecord
 		if err := json.Unmarshal(line, &rec); err != nil {
-			continue
+			bad++
+			return
 		}
-		if rec.URL == "" || (rec.Body == "" && rec.RawHeader == "") {
-			continue
+		hdr := rec.RawHeader
+		if hdr == "" {
+			hdr = headerMapText(rec.Header)
+		}
+		if rec.URL == "" || (rec.Body == "" && hdr == "") {
+			return
 		}
 		if cfg.Scope != "" && !hostInScope(rec.URL, cfg.Scope) {
-			continue
+			return
+		}
+		body := rec.Body
+		if binaryContentType(rec.ContentType) || (body != "" && looksBinary(body)) {
+			binSkip++
+			body = "" // header tetap di-scan
+			if hdr == "" {
+				return
+			}
+		}
+		if int64(len(body)) > cfg.MaxBodyBytes {
+			// salin potongan supaya string hasil decode (bisa puluhan MB) bisa
+			// segera di-GC, bukan tertahan selama worker memindai 10 MB pertama.
+			body = strings.Clone(body[:cfg.MaxBodyBytes])
 		}
 		count++
-		// v3: scan body + response headers (CSP/Set-Cookie often carry hosts/secrets)
-		combined := rec.Body
-		if rec.RawHeader != "" {
-			combined = rec.Body + "\n" + rec.RawHeader
+		select {
+		case jobs <- jsonJob{rec.URL, body, hdr}:
+		case <-stop:
 		}
-		jobs <- jsonJob{rec.URL, combined}
-	}
-	if err := sc.Err(); err != nil {
-		logVerbose(cfg, "[httpx-json] scanner error: %v", err)
-	}
+	})
 	close(jobs)
 	wg.Wait()
 	close(results)
 	<-done
-	logInfo(cfg, "httpx-json: %d record discan (in-scope)", count)
+	logInfo(cfg, "httpx-json: %d record discan (in-scope), %d body biner dilewati", count, binSkip)
+	if bad > 0 {
+		logWarn(cfg, "httpx-json: %d baris bukan JSON valid dilewati", bad)
+	}
+	if skipped > 0 {
+		logWarn(cfg, "httpx-json: %d baris > %d MB dilewati (pembacaan tetap berlanjut)", skipped, maxLine>>20)
+	}
+	if rerr != nil {
+		return fmt.Errorf("reading httpx-json: %w", rerr)
+	}
+	return nil
 }
 
 // ─── Output ───────────────────────────────────────────────────────────────────
@@ -2300,14 +2545,19 @@ func colorSeverity(cfg *Config, sev string) string {
 	}
 }
 
-func printFinding(cfg *Config, f Finding, w io.Writer) {
+// oneLine meng-escape karakter yang akan memecah format satu-baris
+// `[SEV] Nama | nilai | url` (mis. private key PEM berisi newline).
+var oneLine = strings.NewReplacer("\r", `\r`, "\n", `\n`, "\t", `\t`)
+
+func printFinding(cfg *Config, f Finding, w io.Writer) error {
 	line := fmt.Sprintf("%s %s | %s | %s\n",
 		colorSeverity(cfg, f.Severity),
-		colorize(cfg, colorCyan, f.Pattern),
-		colorize(cfg, colorGreen, truncate(f.Match, 120)),
-		colorize(cfg, colorDim, f.URL),
+		colorize(cfg, colorCyan, oneLine.Replace(f.Pattern)),
+		colorize(cfg, colorGreen, oneLine.Replace(truncate(f.Match, 120))),
+		colorize(cfg, colorDim, oneLine.Replace(f.URL)),
 	)
-	fmt.Fprint(w, line)
+	_, err := io.WriteString(w, line)
+	return err
 }
 
 func colorize(cfg *Config, color, s string) string {
@@ -2348,7 +2598,9 @@ func (js *jsonStream) emit(fd Finding) {
 		fmt.Fprint(js.w, ",")
 	}
 	js.wrote = true
-	js.w.Write(b)
+	if _, err := js.w.Write(b); err != nil {
+		noteWriteErr(err)
+	}
 }
 
 func (js *jsonStream) end() {
@@ -2357,13 +2609,73 @@ func (js *jsonStream) end() {
 	if js.closed {
 		return
 	}
+	var err error
 	if !js.opened {
-		fmt.Fprint(js.w, "[]\n")
+		_, err = fmt.Fprint(js.w, "[]\n")
 	} else {
-		fmt.Fprint(js.w, "]\n")
+		_, err = fmt.Fprint(js.w, "]\n")
+	}
+	if err != nil {
+		noteWriteErr(err)
 	}
 	js.closed = true
 }
+
+// ─── Status global (exit code) ──────────────────────────────────────────────
+//
+// Exit code: 0 = selesai normal; 1 = error fatal (argumen, input tak terbaca,
+// GAGAL MENULIS output); 2 = ada temuan dan --fail-on-findings; 130 = dihentikan
+// Ctrl-C (hasil yang sudah ada tetap di-flush).
+var (
+	writeErrMu  sync.Mutex
+	writeErrV   error // error pertama saat menulis output
+	interrupted atomic.Bool
+)
+
+func noteWriteErr(err error) {
+	writeErrMu.Lock()
+	defer writeErrMu.Unlock()
+	if writeErrV == nil {
+		writeErrV = err
+		fmt.Fprintf(os.Stderr, "Error writing output: %v\n", err)
+	}
+}
+
+func firstWriteErr() error {
+	writeErrMu.Lock()
+	defer writeErrMu.Unlock()
+	return writeErrV
+}
+
+// findingDedup membuang baris output yang identik (url+pola+nilai) — mis. URL
+// yang muncul dua kali di JSONL httpx (re-probe/redirect) atau -l dengan
+// variasi skema. Hanya hash 64-bit yang disimpan (hemat RAM).
+type findingDedup struct {
+	mu   sync.Mutex
+	seen map[uint64]struct{}
+}
+
+func (d *findingDedup) first(f Finding) bool {
+	h := fnv.New64a()
+	h.Write([]byte(f.URL))
+	h.Write([]byte{0})
+	h.Write([]byte(f.Pattern))
+	h.Write([]byte{0})
+	h.Write([]byte(f.Match))
+	k := h.Sum64()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.seen == nil {
+		d.seen = make(map[uint64]struct{}, 1024)
+	}
+	if _, dup := d.seen[k]; dup {
+		return false
+	}
+	d.seen[k] = struct{}{}
+	return true
+}
+
+var emitDedup findingDedup
 
 // outputStats menggantikan akumulasi []Finding untuk ringkasan, sehingga RAM
 // tidak membesar seiring jumlah temuan.
@@ -2403,16 +2715,22 @@ func emit(cfg *Config, fd Finding, outWriter io.Writer, js *jsonStream, stats *o
 	if !severityAtLeast(cfg.MinSeverity, fd.Severity) {
 		return
 	}
+	if !emitDedup.first(fd) {
+		return
+	}
 	if cfg.OutputJSON && js != nil {
 		capped := fd
-		if len([]rune(capped.Match)) > 4096 {
+		if len(capped.Match) > 4096 && len([]rune(capped.Match)) > 4096 {
 			capped.Match = truncate(capped.Match, 4096)
 		}
 		js.emit(capped)
 	} else {
 		mu.Lock()
-		printFinding(cfg, fd, outWriter)
+		err := printFinding(cfg, fd, outWriter)
 		mu.Unlock()
+		if err != nil {
+			noteWriteErr(err)
+		}
 	}
 	if stats != nil {
 		stats.Add(fd.Severity)
@@ -2630,6 +2948,7 @@ func main() {
 		flagInsecureL   = flag.Bool("insecure", false, "Skip TLS certificate verification (alias for -k)")
 		flagProxy       = flag.String("proxy", "", "Explicit proxy URL (default: HTTP(S)_PROXY env)")
 		flagNoDecode    = flag.Bool("no-decode", false, "Disable obfuscated-layer decode pass (faster, fewer findings)")
+		flagNoWindow    = flag.Bool("no-window", false, "Run each gated regex over the whole body instead of literal windows (slower; debugging)")
 		flagJSCrawl     = flag.Int("js-crawl", 0, "On HTML targets, also fetch and scan up to N same-host <script src> files (0=off)")
 	)
 	var headers multiFlag
@@ -2646,6 +2965,7 @@ func main() {
 	flag.Parse()
 	noPublicGlobal = *flagNoPublic
 	noDecodeGlobal = *flagNoDecode
+	noWindowGlobal = *flagNoWindow
 
 	if *flagVersion {
 		fmt.Printf("secrethunter2 v%s\n", version)
@@ -2745,7 +3065,10 @@ func main() {
 			os.Exit(1)
 		}
 		defer outF.Close()
-		outWriter = io.MultiWriter(os.Stdout, ansiStripper{w: outF})
+		// file = keluaran utama (error-nya dilaporkan → exit 1); stdout hanya
+		// salinan, sehingga stdout yang rusak tidak menghentikan penulisan file
+		// (io.MultiWriter berhenti pada writer pertama yang gagal).
+		outWriter = teeOut{primary: ansiStripper{w: outF}, secondary: os.Stdout}
 	}
 
 	// ── Banner ──
@@ -2771,7 +3094,13 @@ func main() {
 		if cfg.Scope != "" {
 			logInfo(cfg, "Scope         : %s", cfg.Scope)
 		}
-		scanHTTPXJSON(cfg, outWriter, js, stats)
+		if err := scanHTTPXJSON(cfg, outWriter, js, stats); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			if cfg.OutputJSON && js != nil {
+				js.end()
+			}
+			os.Exit(1)
+		}
 	} else {
 		// ── MODE 2: fetch/local (perilaku v1) ──
 		singleURL := first(*flagURL, *flagURLLong)
@@ -2913,6 +3242,17 @@ func main() {
 		}
 	}
 	// v3.1: exit code untuk integrasi pipeline (sebelumnya selalu 0).
+	if outF != nil {
+		if err := outF.Close(); err != nil {
+			noteWriteErr(err)
+		}
+	}
+	if firstWriteErr() != nil {
+		os.Exit(1)
+	}
+	if interrupted.Load() {
+		os.Exit(130)
+	}
 	if cfg.FailOnFindings && stats.Total() > 0 {
 		os.Exit(2)
 	}
@@ -2959,12 +3299,19 @@ func runFetchMode(cfg *Config, fsCache *FSCache, outWriter io.Writer, js *jsonSt
 		}
 	}()
 
-	sigCh := make(chan os.Signal, 1)
+	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 	go func() {
-		<-sigCh
-		logWarn(cfg, "Interrupted — flushing results...")
+		if _, ok := <-sigCh; !ok {
+			return
+		}
+		logWarn(cfg, "Interrupted — flushing results... (Ctrl-C lagi = paksa keluar)")
+		interrupted.Store(true)
 		close(stopCh)
+		if _, ok := <-sigCh; ok {
+			os.Exit(130)
+		}
 	}()
 
 	wg.Wait()

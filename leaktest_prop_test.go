@@ -10,9 +10,10 @@ func TestLeaktestPropagate(t *testing.T) {
 	// split + propagate berantai
 	fired(t, `var e="ghp_"+"QwEr0987654321TyUiOpMnBjHgFdSaKlZxCv",i={github_token:e};`,
 		"GitHub Personal Access Token (ghp_) (decoded)", "")
-	// secret_access_key tanpa prefix aws (Generic)
+	// secret_access_key tanpa prefix aws — audit-2026-11b: kini pola spesifik
+	// CRITICAL (dulu hanya tertangkap Generic LOW)
 	fired(t, `"secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYTESTKEY000"`,
-		"Generic Secret / Password in code", "LOW")
+		"AWS Secret Access Key (secretAccessKey)", "CRITICAL")
 	// dipakai 2x -> tak dipropagasi, tapi literal inline tetap ketemu plain
 	fired(t, `var n="AKIA7Q9XTEZZZLEAK004",i={a:n,b:n};`, "AWS Access Key ID", "CRITICAL")
 	// shorthand {k} tak dipropagasi (base tetap ketemu plain)

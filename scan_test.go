@@ -138,7 +138,7 @@ func TestBinusMissingSecrets(t *testing.T) {
 	fired(t, `var getApiSIDAuthToken="Basic RUM5NjhDN0YtMzExNS00MjNDLUE4MjctMzRCNTZDQTM5MzFD";`, "Basic Auth Token in code", "HIGH")
 	fired(t, `var getApiExamToken="Basic MENCQjBDMzUtMENDMi00NEIyLUI4REQtOUQzNDg1RkRGMDQ4";`, "Basic Auth Token in code", "HIGH")
 	fired(t, `REDPER="Ab9xXq2xLm"`, "Encryption Key in code", "HIGH")
-	fired(t, `clientId="ad768ba0-0059-46cf-ac71-c4e627361377"`, "OAuth Client ID (UUID)", "MEDIUM")
+	fired(t, `clientId="ad768ba0-0059-46cf-ac71-c4e627361377"`, "OAuth Client ID (UUID)", "LOW") // audit-2026-11b: identifier publik
 	notFired(t, `var x="eyTunggakanKeuanganPrivileges.SurveyOutstandingMasterConfiguration.Menu";`, "JSON Web Token (JWT)")
 }
 
@@ -324,7 +324,7 @@ func TestCrossTalkDedup(t *testing.T) {
 func TestMoreFamilies2(t *testing.T) {
 	cases := []struct{ content, name string }{
 		{`github_client_secret = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"`, "GitHub Client Secret"},
-		{`client_id=sq0idp-AbCdEfGhIjKlMnOpQrStUvWx12`, "Square App ID / Client Secret"},
+		{`client_id=sq0idp-AbCdEfGhIjKlMnOpQrStUvWx12`, "Square Application ID (sq0idp-)"},
 		{`jdbc:oracle:thin:scott/tiger@dbhost:1521/orcl`, "Oracle JDBC Thin URL"},
 		{`dbhost:5432:mydb:bob:s3cretPass99`, "PostgreSQL .pgpass entry"},
 		{`travis_token = "AbCdEfGhIjKlMnOpQrStUvWx12"`, ""},
@@ -340,7 +340,10 @@ func TestMoreFamilies2(t *testing.T) {
 		{`launchdarkly_sdk_key = "sdk-a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"`, "LaunchDarkly SDK/Mobile/API Key (sdk-/mob-/api-)"},
 		{`datadog_app_key = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"`, "DataDog Application Key (context)"},
 		{`snyk_token = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"`, ""},
-		{`contentful_token = "CFPAT-AbCdEfGhIjKlMnOpQrStUvWx1234567890abcdef"`, "Contentful Access Token"},
+		// audit-2026-11b: sampel lama (CFPAT- 46 char) hanya "lolos" karena {43}
+		// memotongnya; pakai token delivery 43 char yang realistis. CFPAT- punya
+		// pola sendiri (audit2_coverage_test.go).
+		{`contentful_token = "Q7xKpL2mN9vB4cR8tY1wE6uI3oP5aS0dF-hJ_kZ2gXq"`, "Contentful Access Token"},
 		{`sanity_token = "skAbCdEfGhIjKlMnOpQrStUvWx1234567890abcdef"`, "Sanity API Token (context)"},
 	}
 	for _, c := range cases {
@@ -372,9 +375,8 @@ func TestParallelEquivalence(t *testing.T) {
 	if len(content) < 1024*1024 {
 		t.Fatalf("test content too small: %d", len(content))
 	}
-	lower := strings.ToLower(content)
-	seq := scanContentSeq("t://x", content, lower)
-	par := scanContentPar("t://x", content, lower)
+	seq := scanContentSeq("t://x", content)
+	par := scanContentPar("t://x", content)
 	key := func(f Finding) string { return f.Pattern + "\x00" + f.Match + "\x00" + f.Severity }
 	a, b := map[string]int{}, map[string]int{}
 	for _, f := range seq {

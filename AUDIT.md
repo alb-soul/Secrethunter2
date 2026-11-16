@@ -1,5 +1,84 @@
 # AUDIT — secrethunter2 (November 2026)
 
+> **Lanjutan: audit 2026-11b (v2.5.0)** — lihat [§0](#0-audit-2026-11b-v250) di bawah.
+> Bagian §1–§10 adalah audit pertama (v2.4.0) dan dibiarkan sebagai catatan sejarah;
+> item OPEN #10 (SIGINT httpx-json) dan #13 (newline di output) kini **FIXED** di 2026-11b.
+
+---
+
+## 0. Audit 2026-11b (v2.5.0)
+
+Kontrak yang dijaga: `--httpx-json <jsonl> --scope <domain> -o secrets.txt -t N -silent`,
+fallback `-l <urls> -o … -t N -silent [-rate N] [-ua UA] [-H …]`, format baris
+`[SEVERITY] Nama Layanan | nilai | url`. Diverifikasi oleh `TestHTTPXJSONEndToEnd`,
+`TestPrintFindingSingleLine` dan uji manual mode `-l` terhadap server lokal.
+
+### 0.1 Hasil terukur (corpus sintetis `tools/gencorpus`, 55 MB, 1503 record)
+
+| | v2.4.0 | v2.5.0 |
+|---|---|---|
+| Waktu (mode kontrak, -t 8) | 37.0 s | **3.0 s** |
+| Recall secret tertanam | 738/977 (75.5%) | **977/977** |
+| FP di record jebakan | 425 | **0** |
+| Baris output rusak | 50 | **0** |
+| File berisi baris 70 MB | berhenti di tengah (28 temuan) | lanjut (43 temuan) |
+| `go test -race` | — | bersih |
+
+### 0.2 Bug yang diperbaiki
+
+| # | Tingkat | Masalah | Perbaikan |
+|---|---|---|---|
+| B1 | P0 | `--httpx-json`: `bufio.Scanner` berhenti total pada baris > 64 MB → semua record sesudahnya tidak di-scan (error hanya tampil dengan `-v`) | `forEachLine`: baris > 8×`--max-size` dilewati & dihitung, pembacaan lanjut |
+| B2 | P1 | field `header` (map) httpx diabaikan | fallback `headerMapText` bila `raw_header` kosong |
+| B3 | P1 | deteksi biner menghitung byte ≥0x80 sebagai non-printable → halaman CJK/UTF-8 dilewati (FN); mode httpx tidak punya cek biner | `looksBinary` (UTF-8 aware, U+FFFD/NUL) + `content_type` |
+| B4 | P1 | private key PEM (berisi `\n`) memecah format satu-baris | `\n`/`\r`/`\t` di-escape |
+| B5 | P1 | `isBase64Slice` menghitung char base64 di kanan secara tidak kontigu → token yang diikuti `/path");…` dibuang (Telegram 0% recall) | hitung run kontigu |
+| B6 | P1 | 4 entri map guard salah ketik nama pola (Flutterwave/Stytch/Clerk/…) → guard diam-diam tidak aktif | dibetulkan + `TestAudit2GuardMapsReferenceRealPatterns` |
+| B7 | P1 | pola konteks `([A-Za-z0-9]{40})['"]?` mengambil 40 char PERTAMA token yang lebih panjang (nilai terpotong menang dedupe) | capture yang berakhir di tengah run alfanumerik dibuang |
+| B8 | P2 | salinan `body+"\n"+header` 10 MB per record; channel ber-buffer `-t` record; worker > CPU di mode CPU-bound | header di-scan terpisah, channel tanpa buffer, worker ≤ GOMAXPROCS |
+| B9 | P2 | error tulis `-o` ditelan (exit 0); Ctrl-C di mode httpx-json tidak di-handle; `io.MultiWriter` berhenti menulis file bila stdout rusak | exit 1 + pesan; SIGINT flush (exit 130); `teeOut` |
+| B10 | P2 | baris duplikat identik (URL ganda di JSONL) | dedup hash url+pola+nilai |
+| B11 | P3 | `-H "Host: …"` diabaikan net/http | diset ke `req.Host` |
+
+### 0.3 Pola: presisi & recall
+
+- **FP dihapus**: AWS Key ID `(?i)` (identifier `akia…`), `mongodb://localhost:27017` tanpa kredensial
+  (CRITICAL palsu), Telegram `timestamp:hex`, Mailgun `monkey-…`, Mailchimp tanpa batas, Twitch
+  `{oauth:handler…}`, Ghost `ObjectId:sha256`, Basic auth yang ter-decode biner, prefix generik
+  (`re_`, `rnd_`, `pa-`, `da2-`, …) yang cocok dengan identifier snake/kebab-case.
+- **FN diperbaiki**: Telegram (0→100%), Supabase service_role (payload diawali `iss`, kini lewat
+  klaim JWT), Asana (format gid 16 digit), Discord ID baru (`O…`), driver SQLAlchemy
+  (`postgresql+psycopg2://`), placeholder kata pendek (`none/null/todo/asdf`) kini hanya per-segmen.
+- **Severity**: identifier publik diturunkan ke LOW (Twilio SID, Google OAuth Client ID, UUID client
+  id, GCP SA email, Algolia App ID, Sentry DSN, Mailgun pubkey); `"type":"service_account"` tanpa
+  private key → MEDIUM (dengan private key: pola baru CRITICAL); Square dipisah `sq0csp-` (HIGH) /
+  `sq0idp-` (LOW).
+- **Coverage**: +34 pola (`patterns_2026b.go`), masing-masing dengan test positif & negatif
+  (`audit2_coverage_test.go`).
+
+### 0.4 Performa
+
+Profil v2.4.0: 92% CPU di NFA `regexp` (seluruh body per pola). 57 pola tanpa gate, gate sisanya
+lemah (literal ≥4 char tanpa ekspansi). Perbaikan (`engine.go`):
+
+1. Literal wajib diekstrak dengan aljabar exact-set ala RE2 (`api[_-]?key` → {apikey, api_key,
+   api-key}; `A(?:KIA|SIA…)` → {AKIA, ASIA, …}; prefix/suffix repetisi `/[0-9]{12,}` → {/0…/9}).
+2. Satu pass Aho-Corasick untuk semua literal (lowercase ASCII on-the-fly, tanpa salinan `ToLower`).
+3. Regex hanya di jendela sekitar kemunculan literal paling jarang (L = panjang match maks dari AST;
+   tepi jendela menembus run repetisi tak-berhingga), fallback full scan bila padat.
+4. Body ≥1 MB: pola dibagi dinamis (work-stealing).
+
+Kesetaraan windowed == full scan diuji (`TestEngineWindowEquivalence*`: semua sampel test ×3
+konteks + body >1 MB + 400 body corpus). `--no-window` tersedia sebagai escape hatch.
+
+### 0.5 Masih terbuka
+
+- Varian decode (`decodedVariants`) masih memindai ulang seluruh varian (kini murah karena window,
+  tapi changed-region scanning masih bisa ±2× lagi pada bundle besar ber-escape).
+- Memori puncak saat satu baris JSONL 70 MB: ±300 MB (baris + string hasil decode); di bawah batas
+  `--response-size-to-save 10MB` httpx baris tidak akan sebesar itu.
+- Rotasi/pembersihan riwayat git untuk secret lama di komentar (§5) tetap tindakan manual.
+
 Audit menyeluruh atas `secrethunter2` (Go, 401 pola awal) mencakup: kebenaran kode,
 kualitas pola (false negative / false positive), performa, keamanan/higiene repo,
 serta celah fitur untuk menunjang bug-bounty hunting.
