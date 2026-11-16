@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"net/url"
@@ -35,12 +36,15 @@ import (
 	"path/filepath"
 	"regexp"
 	"regexp/syntax"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -288,6 +292,16 @@ type ansiStripper struct{ w io.Writer }
 
 var reANSI = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
+// teeOut menulis ke primary (file -o) dan secondary (stdout). Hanya error
+// primary yang dikembalikan.
+type teeOut struct{ primary, secondary io.Writer }
+
+func (t teeOut) Write(p []byte) (int, error) {
+	n, err := t.primary.Write(p)
+	_, _ = t.secondary.Write(p)
+	return n, err
+}
+
 func (a ansiStripper) Write(p []byte) (int, error) {
 	if bytes.IndexByte(p, 0x1b) < 0 {
 		return a.w.Write(p)
@@ -376,7 +390,12 @@ func fetchURL(cfg *Config, rawURL string, fsCache *FSCache) (string, error) {
 		for _, h := range cfg.ExtraHeaders {
 			parts := strings.SplitN(h, ":", 2)
 			if len(parts) == 2 {
-				req.Header.Set(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+				name, val := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+				if strings.EqualFold(name, "Host") {
+					req.Host = val // net/http mengabaikan Header["Host"]
+					continue
+				}
+				req.Header.Set(name, val)
 			}
 		}
 
@@ -411,7 +430,8 @@ func fetchURL(cfg *Config, rawURL string, fsCache *FSCache) (string, error) {
 		}
 		// v3.1: body biner (NUL byte / mayoritas non-printable) tidak mungkin
 		// berisi secret tekstual — skip supaya tidak buang CPU & memicu FP.
-		if len(data) > 0 && (bytes.IndexByte(data, 0) >= 0 || printableRatio(data) < 0.5) {
+		if len(data) > 0 && (binaryContentType(resp.Header.Get("Content-Type")) ||
+			bytes.IndexByte(data, 0) >= 0 || looksBinary(string(data))) {
 			logVerbose(cfg, "[!] %s body biner — dilewati", rawURL)
 			return "", fmt.Errorf("skipped (binary body)")
 		}
@@ -2183,48 +2203,200 @@ func crawlScripts(cfg *Config, pageURL, content string, rl *RateLimiter, fsCache
 // ─── httpx JSONL mode (v2, body-reuse) ─────────────────────────────────────────
 
 type httpxRecord struct {
-	URL        string `json:"url"`
-	StatusCode int    `json:"status_code"`
-	Body       string `json:"body"`
-	RawHeader  string `json:"raw_header"`
+	URL         string          `json:"url"`
+	StatusCode  int             `json:"status_code"`
+	Body        string          `json:"body"`
+	RawHeader   string          `json:"raw_header"`
+	Header      json.RawMessage `json:"header"` // map ternormalisasi httpx (fallback bila raw_header kosong)
+	ContentType string          `json:"content_type"`
 }
 
-type jsonJob struct{ url, body string }
+type jsonJob struct{ url, body, header string }
 
-// hostInScope: host == scope atau *.scope
+// hostInScope: host == scope atau *.scope (case-insensitive, abaikan titik akhir,
+// scope boleh ditulis sebagai URL).
 func hostInScope(rawURL, scope string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return false
 	}
-	host := strings.ToLower(u.Hostname())
-	scope = strings.ToLower(strings.TrimPrefix(scope, "*."))
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	scope = strings.ToLower(strings.TrimSpace(scope))
+	if strings.Contains(scope, "://") {
+		if su, err := url.Parse(scope); err == nil {
+			scope = su.Hostname()
+		}
+	}
+	scope = strings.TrimSuffix(strings.TrimPrefix(scope, "*."), ".")
+	if host == "" || scope == "" {
+		return false
+	}
 	return host == scope || strings.HasSuffix(host, "."+scope)
 }
 
+// headerMapText meratakan field `header` httpx (map[string]string|[]string) menjadi
+// teks "k: v" per baris. Dipakai hanya bila raw_header tidak ada.
+func headerMapText(raw json.RawMessage) string {
+	if len(raw) == 0 || raw[0] != '{' {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return ""
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		switch v := m[k].(type) {
+		case string:
+			b.WriteString(k + ": " + v + "\n")
+		case []any:
+			for _, e := range v {
+				if s, ok := e.(string); ok {
+					b.WriteString(k + ": " + s + "\n")
+				}
+			}
+		}
+	}
+	return b.String()
+}
+
+// binaryContentType: tipe konten yang tidak mungkin memuat secret tekstual.
+func binaryContentType(ct string) bool {
+	ct = strings.ToLower(strings.TrimSpace(ct))
+	if ct == "" || strings.Contains(ct, "svg") {
+		return false
+	}
+	for _, p := range []string{"image/", "font/", "audio/", "video/", "application/octet-stream",
+		"application/zip", "application/gzip", "application/x-gzip", "application/pdf",
+		"application/wasm", "application/x-font", "application/font", "application/vnd.ms-fontobject",
+		"application/x-shockwave-flash", "application/x-7z", "application/x-rar", "application/x-tar"} {
+		if strings.HasPrefix(ct, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// looksBinary memeriksa 64 KB pertama: NUL byte, atau >10% rune tidak valid /
+// U+FFFD (body biner yang dijadikan string oleh httpx) / kontrol. UTF-8 valid
+// (CJK, emoji) dihitung sebagai teks — versi lama menghitung byte ≥0x80 sebagai
+// non-printable sehingga halaman Jepang/Cina bisa dilewati sebagai "biner".
+func looksBinary(s string) bool {
+	n := len(s)
+	if n > 64<<10 {
+		n = 64 << 10
+	}
+	sample := s[:n]
+	if strings.IndexByte(sample, 0) >= 0 {
+		return true
+	}
+	bad, total := 0, 0
+	for i := 0; i < len(sample); {
+		r, size := utf8.DecodeRuneInString(sample[i:])
+		switch {
+		case r == utf8.RuneError && size <= 1:
+			if n < len(s) && len(sample)-i < utf8.UTFMax {
+				i = len(sample) // rune terpotong di batas sampel
+				continue
+			}
+			bad++
+		case r == utf8.RuneError:
+			bad++ // U+FFFD literal
+		case r < 32 && r != '\n' && r != '\r' && r != '\t' && r != '\f':
+			bad++
+		}
+		total++
+		i += size
+	}
+	return total > 0 && bad*10 > total
+}
+
+// forEachLine memanggil fn untuk setiap baris tak-kosong. Baris yang melebihi
+// maxLine DILEWATI (dihitung) — pembacaan berlanjut ke baris berikutnya.
+// BUGFIX audit-2026-11b: bufio.Scanner lama berhenti total pada ErrTooLong
+// sehingga semua record setelah satu baris raksasa tidak pernah di-scan.
+func forEachLine(r io.Reader, maxLine int, stop <-chan struct{}, fn func([]byte)) (skipped int, err error) {
+	br := bufio.NewReaderSize(r, 1<<20)
+	buf := make([]byte, 0, 1<<20)
+	tooLong := false
+	for {
+		select {
+		case <-stop:
+			return skipped, nil
+		default:
+		}
+		frag, e := br.ReadSlice('\n')
+		if !tooLong {
+			if len(buf)+len(frag) > maxLine {
+				tooLong = true
+				buf = buf[:0]
+			} else {
+				buf = append(buf, frag...)
+			}
+		}
+		if e == bufio.ErrBufferFull {
+			continue
+		}
+		if tooLong {
+			skipped++
+		} else if line := bytes.TrimSpace(buf); len(line) > 0 {
+			fn(line)
+		}
+		buf = buf[:0]
+		tooLong = false
+		if e != nil {
+			if e == io.EOF {
+				return skipped, nil
+			}
+			return skipped, e
+		}
+	}
+}
+
+// scanRecord memindai body dan header secara terpisah (tanpa menyalin body
+// 10 MB hanya untuk menempelkan header) lalu menggabung + dedupe.
+func scanRecord(rawURL, body, header string) []Finding {
+	out := scanContent(rawURL, body)
+	if header != "" {
+		out = append(out, scanContent(rawURL, header)...)
+		out = dedupeOverlapping(out)
+	}
+	return out
+}
+
 // scanHTTPXJSON membaca JSONL httpx (-json -irr) dan men-scan body tanpa fetch.
-func scanHTTPXJSON(cfg *Config, outWriter io.Writer, js *jsonStream, stats *outputStats) {
+// Streaming: hanya satu record yang di-decode oleh producer, worker menahan
+// maksimal satu record masing-masing (channel tanpa buffer).
+func scanHTTPXJSON(cfg *Config, outWriter io.Writer, js *jsonStream, stats *outputStats) error {
 	f, err := os.Open(cfg.HTTPXJSON)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening httpx-json: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("opening httpx-json: %w", err)
 	}
 	defer f.Close()
 
-	jobs := make(chan jsonJob, cfg.Threads)
+	// Mode ini murni CPU-bound (tanpa jaringan): worker > jumlah CPU hanya
+	// menambah memori (tiap worker memegang body s/d 10 MB + salinannya).
+	workers := cfg.Threads
+	if ncpu := runtime.GOMAXPROCS(0); workers > ncpu {
+		logVerbose(cfg, "[httpx-json] -t %d dibatasi ke %d worker (CPU-bound)", workers, ncpu)
+		workers = ncpu
+	}
+
+	jobs := make(chan jsonJob)
 	results := make(chan Finding, 500)
 
 	var wg sync.WaitGroup
-	for i := 0; i < cfg.Threads; i++ {
+	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for j := range jobs {
-				body := j.body
-				if int64(len(body)) > cfg.MaxBodyBytes {
-					body = body[:cfg.MaxBodyBytes]
-				}
-				for _, fd := range scanContent(j.url, body) {
+				for _, fd := range scanRecord(j.url, j.body, j.header) {
 					results <- fd
 				}
 			}
@@ -2239,41 +2411,77 @@ func scanHTTPXJSON(cfg *Config, outWriter io.Writer, js *jsonStream, stats *outp
 		}
 	}()
 
-	// Producer: baca JSONL baris demi baris (buffer besar utk body inline)
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024) // s/d 64MB per baris
-	count := 0
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
+	stop := make(chan struct{})
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	go func() {
+		if _, ok := <-sigCh; !ok {
+			return
 		}
+		logWarn(cfg, "Interrupted — menyelesaikan record yang sedang diproses lalu flush (Ctrl-C lagi = paksa keluar)...")
+		interrupted.Store(true)
+		close(stop)
+		if _, ok := <-sigCh; ok {
+			os.Exit(130)
+		}
+	}()
+
+	// Batas satu baris JSONL: body s/d MaxBodyBytes bisa membengkak ±6× saat
+	// di-escape JSON (\u00XX), plus header/request.
+	maxLine := int(8*cfg.MaxBodyBytes) + (4 << 20)
+	if maxLine < 64<<20 {
+		maxLine = 64 << 20
+	}
+	count, bad, binSkip := 0, 0, 0
+	skipped, rerr := forEachLine(f, maxLine, stop, func(line []byte) {
 		var rec httpxRecord
 		if err := json.Unmarshal(line, &rec); err != nil {
-			continue
+			bad++
+			return
 		}
-		if rec.URL == "" || (rec.Body == "" && rec.RawHeader == "") {
-			continue
+		hdr := rec.RawHeader
+		if hdr == "" {
+			hdr = headerMapText(rec.Header)
+		}
+		if rec.URL == "" || (rec.Body == "" && hdr == "") {
+			return
 		}
 		if cfg.Scope != "" && !hostInScope(rec.URL, cfg.Scope) {
-			continue
+			return
+		}
+		body := rec.Body
+		if binaryContentType(rec.ContentType) || (body != "" && looksBinary(body)) {
+			binSkip++
+			body = "" // header tetap di-scan
+			if hdr == "" {
+				return
+			}
+		}
+		if int64(len(body)) > cfg.MaxBodyBytes {
+			body = body[:cfg.MaxBodyBytes]
 		}
 		count++
-		// v3: scan body + response headers (CSP/Set-Cookie often carry hosts/secrets)
-		combined := rec.Body
-		if rec.RawHeader != "" {
-			combined = rec.Body + "\n" + rec.RawHeader
+		select {
+		case jobs <- jsonJob{rec.URL, body, hdr}:
+		case <-stop:
 		}
-		jobs <- jsonJob{rec.URL, combined}
-	}
-	if err := sc.Err(); err != nil {
-		logVerbose(cfg, "[httpx-json] scanner error: %v", err)
-	}
+	})
 	close(jobs)
 	wg.Wait()
 	close(results)
 	<-done
-	logInfo(cfg, "httpx-json: %d record discan (in-scope)", count)
+	logInfo(cfg, "httpx-json: %d record discan (in-scope), %d body biner dilewati", count, binSkip)
+	if bad > 0 {
+		logWarn(cfg, "httpx-json: %d baris bukan JSON valid dilewati", bad)
+	}
+	if skipped > 0 {
+		logWarn(cfg, "httpx-json: %d baris > %d MB dilewati (pembacaan tetap berlanjut)", skipped, maxLine>>20)
+	}
+	if rerr != nil {
+		return fmt.Errorf("reading httpx-json: %w", rerr)
+	}
+	return nil
 }
 
 // ─── Output ───────────────────────────────────────────────────────────────────
@@ -2300,14 +2508,19 @@ func colorSeverity(cfg *Config, sev string) string {
 	}
 }
 
-func printFinding(cfg *Config, f Finding, w io.Writer) {
+// oneLine meng-escape karakter yang akan memecah format satu-baris
+// `[SEV] Nama | nilai | url` (mis. private key PEM berisi newline).
+var oneLine = strings.NewReplacer("\r", `\r`, "\n", `\n`, "\t", `\t`)
+
+func printFinding(cfg *Config, f Finding, w io.Writer) error {
 	line := fmt.Sprintf("%s %s | %s | %s\n",
 		colorSeverity(cfg, f.Severity),
-		colorize(cfg, colorCyan, f.Pattern),
-		colorize(cfg, colorGreen, truncate(f.Match, 120)),
-		colorize(cfg, colorDim, f.URL),
+		colorize(cfg, colorCyan, oneLine.Replace(f.Pattern)),
+		colorize(cfg, colorGreen, oneLine.Replace(truncate(f.Match, 120))),
+		colorize(cfg, colorDim, oneLine.Replace(f.URL)),
 	)
-	fmt.Fprint(w, line)
+	_, err := io.WriteString(w, line)
+	return err
 }
 
 func colorize(cfg *Config, color, s string) string {
@@ -2348,7 +2561,9 @@ func (js *jsonStream) emit(fd Finding) {
 		fmt.Fprint(js.w, ",")
 	}
 	js.wrote = true
-	js.w.Write(b)
+	if _, err := js.w.Write(b); err != nil {
+		noteWriteErr(err)
+	}
 }
 
 func (js *jsonStream) end() {
@@ -2357,13 +2572,73 @@ func (js *jsonStream) end() {
 	if js.closed {
 		return
 	}
+	var err error
 	if !js.opened {
-		fmt.Fprint(js.w, "[]\n")
+		_, err = fmt.Fprint(js.w, "[]\n")
 	} else {
-		fmt.Fprint(js.w, "]\n")
+		_, err = fmt.Fprint(js.w, "]\n")
+	}
+	if err != nil {
+		noteWriteErr(err)
 	}
 	js.closed = true
 }
+
+// ─── Status global (exit code) ──────────────────────────────────────────────
+//
+// Exit code: 0 = selesai normal; 1 = error fatal (argumen, input tak terbaca,
+// GAGAL MENULIS output); 2 = ada temuan dan --fail-on-findings; 130 = dihentikan
+// Ctrl-C (hasil yang sudah ada tetap di-flush).
+var (
+	writeErrMu  sync.Mutex
+	writeErrV   error // error pertama saat menulis output
+	interrupted atomic.Bool
+)
+
+func noteWriteErr(err error) {
+	writeErrMu.Lock()
+	defer writeErrMu.Unlock()
+	if writeErrV == nil {
+		writeErrV = err
+		fmt.Fprintf(os.Stderr, "Error writing output: %v\n", err)
+	}
+}
+
+func firstWriteErr() error {
+	writeErrMu.Lock()
+	defer writeErrMu.Unlock()
+	return writeErrV
+}
+
+// findingDedup membuang baris output yang identik (url+pola+nilai) — mis. URL
+// yang muncul dua kali di JSONL httpx (re-probe/redirect) atau -l dengan
+// variasi skema. Hanya hash 64-bit yang disimpan (hemat RAM).
+type findingDedup struct {
+	mu   sync.Mutex
+	seen map[uint64]struct{}
+}
+
+func (d *findingDedup) first(f Finding) bool {
+	h := fnv.New64a()
+	h.Write([]byte(f.URL))
+	h.Write([]byte{0})
+	h.Write([]byte(f.Pattern))
+	h.Write([]byte{0})
+	h.Write([]byte(f.Match))
+	k := h.Sum64()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.seen == nil {
+		d.seen = make(map[uint64]struct{}, 1024)
+	}
+	if _, dup := d.seen[k]; dup {
+		return false
+	}
+	d.seen[k] = struct{}{}
+	return true
+}
+
+var emitDedup findingDedup
 
 // outputStats menggantikan akumulasi []Finding untuk ringkasan, sehingga RAM
 // tidak membesar seiring jumlah temuan.
@@ -2403,16 +2678,22 @@ func emit(cfg *Config, fd Finding, outWriter io.Writer, js *jsonStream, stats *o
 	if !severityAtLeast(cfg.MinSeverity, fd.Severity) {
 		return
 	}
+	if !emitDedup.first(fd) {
+		return
+	}
 	if cfg.OutputJSON && js != nil {
 		capped := fd
-		if len([]rune(capped.Match)) > 4096 {
+		if len(capped.Match) > 4096 && len([]rune(capped.Match)) > 4096 {
 			capped.Match = truncate(capped.Match, 4096)
 		}
 		js.emit(capped)
 	} else {
 		mu.Lock()
-		printFinding(cfg, fd, outWriter)
+		err := printFinding(cfg, fd, outWriter)
 		mu.Unlock()
+		if err != nil {
+			noteWriteErr(err)
+		}
 	}
 	if stats != nil {
 		stats.Add(fd.Severity)
@@ -2745,7 +3026,10 @@ func main() {
 			os.Exit(1)
 		}
 		defer outF.Close()
-		outWriter = io.MultiWriter(os.Stdout, ansiStripper{w: outF})
+		// file = keluaran utama (error-nya dilaporkan → exit 1); stdout hanya
+		// salinan, sehingga stdout yang rusak tidak menghentikan penulisan file
+		// (io.MultiWriter berhenti pada writer pertama yang gagal).
+		outWriter = teeOut{primary: ansiStripper{w: outF}, secondary: os.Stdout}
 	}
 
 	// ── Banner ──
@@ -2771,7 +3055,13 @@ func main() {
 		if cfg.Scope != "" {
 			logInfo(cfg, "Scope         : %s", cfg.Scope)
 		}
-		scanHTTPXJSON(cfg, outWriter, js, stats)
+		if err := scanHTTPXJSON(cfg, outWriter, js, stats); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			if cfg.OutputJSON && js != nil {
+				js.end()
+			}
+			os.Exit(1)
+		}
 	} else {
 		// ── MODE 2: fetch/local (perilaku v1) ──
 		singleURL := first(*flagURL, *flagURLLong)
@@ -2913,6 +3203,17 @@ func main() {
 		}
 	}
 	// v3.1: exit code untuk integrasi pipeline (sebelumnya selalu 0).
+	if outF != nil {
+		if err := outF.Close(); err != nil {
+			noteWriteErr(err)
+		}
+	}
+	if firstWriteErr() != nil {
+		os.Exit(1)
+	}
+	if interrupted.Load() {
+		os.Exit(130)
+	}
 	if cfg.FailOnFindings && stats.Total() > 0 {
 		os.Exit(2)
 	}
@@ -2959,12 +3260,19 @@ func runFetchMode(cfg *Config, fsCache *FSCache, outWriter io.Writer, js *jsonSt
 		}
 	}()
 
-	sigCh := make(chan os.Signal, 1)
+	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 	go func() {
-		<-sigCh
-		logWarn(cfg, "Interrupted — flushing results...")
+		if _, ok := <-sigCh; !ok {
+			return
+		}
+		logWarn(cfg, "Interrupted — flushing results... (Ctrl-C lagi = paksa keluar)")
+		interrupted.Store(true)
 		close(stopCh)
+		if _, ok := <-sigCh; ok {
+			os.Exit(130)
+		}
 	}()
 
 	wg.Wait()
