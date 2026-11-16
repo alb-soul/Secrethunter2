@@ -891,8 +891,10 @@ var patterns = []Pattern{
 		Severity: SevHigh,
 	},
 	{
-		Name:       "Cloudflare API Token",
-		Regex:      regexp.MustCompile(`(?i)(?:cf|cloudflare)[_\-\s]*(?:api[_\-\s]*)?token["\']?\s*[=:]\s*['"]?([A-Za-z0-9_\-]{40})['"]?`),
+		Name: "Cloudflare API Token",
+		// audit-2026-11b: batas kanan — tanpanya token baru `cfat_…` (53 char)
+		// dilaporkan terpotong 40 char.
+		Regex:      regexp.MustCompile(`(?i)(?:cf|cloudflare)[_\-\s]*(?:api[_\-\s]*)?token["\']?\s*[=:]\s*['"]?([A-Za-z0-9_\-]{40})(?:[^A-Za-z0-9_\-]|$)`),
 		Severity:   SevCritical,
 		MatchGroup: 1,
 	},

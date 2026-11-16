@@ -340,7 +340,10 @@ func TestMoreFamilies2(t *testing.T) {
 		{`launchdarkly_sdk_key = "sdk-a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"`, "LaunchDarkly SDK/Mobile/API Key (sdk-/mob-/api-)"},
 		{`datadog_app_key = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"`, "DataDog Application Key (context)"},
 		{`snyk_token = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"`, ""},
-		{`contentful_token = "CFPAT-AbCdEfGhIjKlMnOpQrStUvWx1234567890abcdef"`, "Contentful Access Token"},
+		// audit-2026-11b: sampel lama (CFPAT- 46 char) hanya "lolos" karena {43}
+		// memotongnya; pakai token delivery 43 char yang realistis. CFPAT- punya
+		// pola sendiri (audit2_coverage_test.go).
+		{`contentful_token = "Q7xKpL2mN9vB4cR8tY1wE6uI3oP5aS0dF-hJ_kZ2gXq"`, "Contentful Access Token"},
 		{`sanity_token = "skAbCdEfGhIjKlMnOpQrStUvWx1234567890abcdef"`, "Sanity API Token (context)"},
 	}
 	for _, c := range cases {

@@ -536,6 +536,7 @@ var genericPatterns = map[string]bool{
 
 func init() {
 	patterns = append(patterns, extraPatterns...)
+	patterns = append(patterns, coveragePatterns2026b...)
 	patternNeeds = make([][]litGroup, len(patterns))
 	patternIndex = make(map[string]int, len(patterns))
 	for i, p := range patterns {
@@ -728,29 +729,30 @@ var noPublicGlobal bool
 // noDecodeGlobal mematikan layer decode/obfuscation (--no-decode).
 var noDecodeGlobal bool
 var publicByDesign = map[string]bool{
-	"Stripe Live Publishable Key":                true,
-	"Midtrans Client Key (public)":               true,
-	"Langfuse Public Key (public)":               true,
-	"Flutterwave Public Key (FLWPUBK...)":        true,
-	"Omise Public Key (public)":                  true,
-	"Toss Payments Client Key (public)":          true,
-	"Wompi Public Key (public)":                  true,
-	"Paystack Public Key (context, public)":      true,
-	"Pagar.me Public Key (context, public)":      true,
-	"PayMongo Public Key (context, public)":      true,
-	"Culqi Public Key (context, public)":         true,
-	"Clerk Publishable Key (pk_live_/pk_test_)":  true,
-	"PubNub Subscribe Key":                       true,
-	"Google reCAPTCHA Site Key":                  true,
-	"Mapbox Public Token":                        true,
-	"Mapbox Temporary Token":                     true,
-	"Algolia Search-Only API Key":                true,
-	"Supabase Publishable Key (sb_publishable_)": true,
-	"PostHog Project API Key (phc_)":             true,
-	"Segment Write Key (context)":                true,
-	"Amplitude API Key":                          true,
-	"Firebase API Key / Config":                  true,
-	"Cloudflare Turnstile Site Key (0x4AAAA)":    true,
+	"Stripe Live Publishable Key":                       true,
+	"Midtrans Client Key (public)":                      true,
+	"Langfuse Public Key (public)":                      true,
+	"Flutterwave Public Key (FLWPUBK...)":               true,
+	"Omise Public Key (public)":                         true,
+	"Toss Payments Client Key (public)":                 true,
+	"Wompi Public Key (public)":                         true,
+	"Paystack Public Key (context, public)":             true,
+	"Pagar.me Public Key (context, public)":             true,
+	"PayMongo Public Key (context, public)":             true,
+	"Culqi Public Key (context, public)":                true,
+	"Clerk Publishable Key (pk_live_/pk_test_)":         true,
+	"PubNub Subscribe Key":                              true,
+	"Google reCAPTCHA Site Key":                         true,
+	"Mapbox Public Token":                               true,
+	"Mapbox Temporary Token":                            true,
+	"Algolia Search-Only API Key":                       true,
+	"Supabase Publishable Key (sb_publishable_)":        true,
+	"PostHog Project API Key (phc_)":                    true,
+	"Segment Write Key (context)":                       true,
+	"Amplitude API Key":                                 true,
+	"Firebase API Key / Config":                         true,
+	"Cloudflare Turnstile Site Key (0x4AAAA)":           true,
+	"Shopify Storefront Access Token (context, public)": true,
 }
 
 // ─── Scanner v3 (parallel-aware) ─────────────────────────────────────────────
@@ -1211,7 +1213,14 @@ func finalizeCandidate(rawURL, content string, li *lineIndex, pi, startPos, endP
 	match := content[startPos:endPos]
 	// v3.1: dedupe by teks-match dipindah ke dedupeOverlapping() (satu tempat)
 	// agar pola kontekstual tidak kalah oleh pola generik yang match lebih dulu.
-	if len(match) < 6 || isPlaceholder(match) {
+	if len(match) < 6 || isPlaceholder(match) || credPlaceholderWords[strings.ToLower(match)] {
+		return Finding{}, false
+	}
+	// audit-2026-11b: pola konteks `…([A-Za-z0-9]{40})['"]?` (penutup opsional)
+	// bisa mengambil 40 char PERTAMA dari token yang lebih panjang (mis. `bkua_…`
+	// 45 char → nilai terpotong yang lalu menang dedupe). Capture group yang
+	// berakhir di tengah run alfanumerik = nilai terpotong → buang.
+	if p.MatchGroup > 0 && endPos < len(content) && isAlnumByte(content[endPos]) && isAlnumByte(content[endPos-1]) {
 		return Finding{}, false
 	}
 	lineNum := li.lineAt(startPos)
@@ -1264,69 +1273,81 @@ func finalizeCandidate(rawURL, content string, li *lineIndex, pi, startPos, endP
 // JS/CSS (`re_render_component`, `pa-container-wrapper`). Token asli berisi
 // karakter acak base62 sehingga hampir pasti memuat digit atau huruf campuran.
 var identifierPronePatterns = map[string]bool{
-	"Resend API Key (re_)":                         true,
-	"Render API Key (rnd_)":                        true,
-	"Xata API Key (xau_)":                          true,
-	"Jina AI API Key (jina_)":                      true,
-	"Voyage AI API Key (pa-)":                      true,
-	"Cerebras API Key (csk-)":                      true,
-	"NVIDIA NIM API Key (nvapi-)":                  true,
-	"Fireworks AI Key (fw_)":                       true,
-	"Tavily API Key (tvly-)":                       true,
-	"Firecrawl API Key (fc-)":                      true,
-	"LlamaCloud / LlamaIndex Key (llx-)":           true,
-	"Apify API Token (apify_api_)":                 true,
-	"n8n Personal API Key (n8n_api_)":              true,
-	"RunPod API Key (rpa_)":                        true,
-	"Honeybadger API Key (hbp_)":                   true,
-	"Weglot API Key":                               true,
-	"Mailgun Private API Key":                      true,
-	"Mailgun Public API Key":                       true,
-	"crates.io API Token (cio)":                    true,
-	"Typeform Personal Token (tfp_)":               true,
-	"Docker Hub Personal Access Token (dckr_pat_)": true,
-	"Cal.com API Key (cal_live/cal_test)":          true,
-	"Grafana Cloud Access Policy Token (glc_)":     true,
-	"Axiom.co Dataset Token (xaat-)":               true,
-	"GitLab OAuth App Secret (gloas-)":             true,
-	"GitLab Pipeline Trigger Token (glptt-)":       true,
-	"GitLab Feed Token (glfeed-)":                  true,
-	"Figma Access Token (figd_/figu_/figr_)":       true,
-	"Pinecone API Key (pcsk_)":                     true,
-	"Ory API Key (ory_pat_/ory_apikey_/ory_wak_)":  true,
-	"Supabase Publishable Key (sb_publishable_)":   true,
-	"Supabase Secret Key (sb_secret_)":             true,
-	"PostHog Personal API Key (phx_)":              true,
-	"PostHog Project API Key (phc_)":               true,
-	"Vercel Access Token (vcp_)":                   true,
-	"Stytch Live Secret (secret-live-)":            true,
-	"Stytch Test Secret (secret-test-)":            true,
-	"PlanetScale Service Token (pscale_tkn_)":      true,
-	"PlanetScale DB Password (pscale_pw_)":         true,
-	"PlanetScale OAuth Token (pscale_oauth_)":      true,
-	"Vault Service Token (hvs.)":                   true,
-	"Vault Batch Token (hvb.)":                     true,
-	"Vault Recovery Token (hvr.)":                  true,
-	"Midtrans Server Key":                          true,
-	"Midtrans Client Key (public)":                 true,
-	"Mercado Pago Credential (APP_USR-)":           true,
-	"Omise Secret Key":                             true,
-	"Omise Public Key (public)":                    true,
-	"Toss Payments Secret Key":                     true,
-	"Toss Payments Client Key (public)":            true,
-	"Wompi Private Key":                            true,
-	"Wompi Integrity/Events Secret":                true,
-	"Wompi Public Key (public)":                    true,
-	"Vercel Blob Read-Write Token":                 true,
-	"WorkOS Secret Key (sk_test/sk_prod/sk_live)":  true,
-	"Netlify Personal Access Token (nfp_)":         true,
-	"Sentry Auth Token (sntrys_/sntryu_)":          true,
-	"Tailscale Auth/API Key (tskey-)":              true,
+	"Resend API Key (re_)":                             true,
+	"Render API Key (rnd_)":                            true,
+	"Xata API Key (xau_)":                              true,
+	"Jina AI API Key (jina_)":                          true,
+	"Voyage AI API Key (pa-)":                          true,
+	"Cerebras API Key (csk-)":                          true,
+	"NVIDIA NIM API Key (nvapi-)":                      true,
+	"Fireworks AI Key (fw_)":                           true,
+	"Tavily API Key (tvly-)":                           true,
+	"Firecrawl API Key (fc-)":                          true,
+	"LlamaCloud / LlamaIndex Key (llx-)":               true,
+	"Apify API Token (apify_api_)":                     true,
+	"n8n Personal API Key (n8n_api_)":                  true,
+	"RunPod API Key (rpa_)":                            true,
+	"Honeybadger API Key (hbp_)":                       true,
+	"Weglot API Key":                                   true,
+	"Mailgun Private API Key":                          true,
+	"Mailgun Public API Key":                           true,
+	"crates.io API Token (cio)":                        true,
+	"Typeform Personal Token (tfp_)":                   true,
+	"Docker Hub Personal Access Token (dckr_pat_)":     true,
+	"Cal.com API Key (cal_live/cal_test)":              true,
+	"Grafana Cloud Access Policy Token (glc_)":         true,
+	"Axiom.co Dataset Token (xaat-)":                   true,
+	"GitLab OAuth App Secret (gloas-)":                 true,
+	"GitLab Pipeline Trigger Token (glptt-)":           true,
+	"GitLab Feed Token (glfeed-)":                      true,
+	"Figma Access Token (figd_/figu_/figr_)":           true,
+	"Pinecone API Key (pcsk_)":                         true,
+	"Ory API Key (ory_pat_/ory_apikey_/ory_wak_)":      true,
+	"Supabase Publishable Key (sb_publishable_)":       true,
+	"Supabase Secret Key (sb_secret_)":                 true,
+	"PostHog Personal API Key (phx_)":                  true,
+	"PostHog Project API Key (phc_)":                   true,
+	"Vercel Access Token (vcp_)":                       true,
+	"Stytch Live Secret (secret-live-)":                true,
+	"Stytch Test Secret (secret-test-)":                true,
+	"PlanetScale Service Token (pscale_tkn_)":          true,
+	"PlanetScale DB Password (pscale_pw_)":             true,
+	"PlanetScale OAuth Token (pscale_oauth_)":          true,
+	"Vault Service Token (hvs.)":                       true,
+	"Vault Batch Token (hvb.)":                         true,
+	"Vault Recovery Token (hvr.)":                      true,
+	"Midtrans Server Key":                              true,
+	"Midtrans Client Key (public)":                     true,
+	"Mercado Pago Credential (APP_USR-)":               true,
+	"Omise Secret Key":                                 true,
+	"Omise Public Key (public)":                        true,
+	"Toss Payments Secret Key":                         true,
+	"Toss Payments Client Key (public)":                true,
+	"Wompi Private Key":                                true,
+	"Wompi Integrity/Events Secret":                    true,
+	"Wompi Public Key (public)":                        true,
+	"Vercel Blob Read-Write Token":                     true,
+	"WorkOS Secret Key (sk_test/sk_prod/sk_live)":      true,
+	"Netlify Personal Access Token (nfp_)":             true,
+	"Sentry Auth Token (sntrys_/sntryu_)":              true,
+	"Tailscale Auth/API Key (tskey-)":                  true,
+	"GitLab Runner Authentication Token (glrt-)":       true,
+	"GitLab Agent Token (glagent-)":                    true,
+	"AWS AppSync API Key (da2-)":                       true,
+	"Docker Hub Organization Access Token (dckr_oat_)": true,
 }
 
-// looksLikeIdentifier: tanpa digit DAN huruf satu jenis (semua kecil / semua
-// besar) → identifier/kata (snake/kebab-case), bukan token acak.
+// looksLikeIdentifier: bagian SETELAH prefix tanpa digit DAN huruf satu jenis
+// (semua kecil / semua besar) → identifier/kata (snake/kebab-case), bukan token
+// acak. Prefix (s.d. separator pertama dalam 12 char) diabaikan supaya digit di
+// prefix seperti `da2-`/`n8n_` tidak menyamarkan identifier.
 func looksLikeIdentifier(m string) bool {
+	for i := 0; i < len(m) && i < 12; i++ {
+		if c := m[i]; c == '-' || c == '_' || c == '.' || c == ':' {
+			m = m[i+1:]
+			break
+		}
+	}
 	var digit, up, low bool
 	for i := 0; i < len(m); i++ {
 		c := m[i]
@@ -1344,8 +1365,10 @@ func looksLikeIdentifier(m string) bool {
 
 // basicAuthPatterns: nilai = base64(user:pass); divalidasi dengan decode.
 var basicAuthPatterns = map[string]bool{
-	"Authorization: Basic header": true,
-	"Basic Auth Token in code":    true,
+	"Authorization: Basic header":         true,
+	"Basic Auth Token in code":            true,
+	"Docker config.json auth (base64)":    true,
+	"npm legacy _auth (base64 user:pass)": true,
 }
 
 // basicAuthValid: base64 harus ter-decode menjadi teks printable (UTF-8 valid,
@@ -1666,6 +1689,22 @@ var standaloneTokenPatterns = map[string]bool{
 	"Ghost Admin API Key (id:secret)":                  true,
 	"DeepL API Key (free :fx)":                         true,
 	"Honeybadger API Key (hbp_)":                       true,
+	// audit-2026-11b (patterns_2026b.go)
+	"Anthropic OAuth Token (sk-ant-oat01-/ort01-)":     true,
+	"OpenAI Admin Key (sk-admin-)":                     true,
+	"Hugging Face Org Token (api_org_)":                true,
+	"Prefect API Key (pnu_)":                           true,
+	"Cloudflare API Token (cfut_/cfat_/cfk_)":          true,
+	"Heroku API Key v2 (HRKU-)":                        true,
+	"CircleCI Personal API Token (CCIPAT_)":            true,
+	"Buildkite User Access Token (bkua_)":              true,
+	"Contentful Personal Access Token (CFPAT-)":        true,
+	"PayPal OAuth Access Token (A21AA)":                true,
+	"New Relic Insert Key (NRII-)":                     true,
+	"MailerSend API Token (mlsn.)":                     true,
+	"GitLab Runner Authentication Token (glrt-)":       true,
+	"GitLab Agent Token (glagent-)":                    true,
+	"Docker Hub Organization Access Token (dckr_oat_)": true,
 }
 
 // isBase64Slice reports whether the match at [startPos,endPos) is a slice of a
