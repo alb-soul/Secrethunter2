@@ -188,10 +188,6 @@ var tpGenerators = []func() plant{
 		return plant{"openai-admin", `const k = "` + v + `";`, v}
 	},
 	func() plant {
-		v := "AQ." + rs(b64url, 50)
-		return plant{"gemini-vertex-express", `GOOGLE_API_KEY="` + v + `"`, v}
-	},
-	func() plant {
 		v := "cfat_" + rs(alnum, 40) + rs(hexL, 8)
 		return plant{"cloudflare-cfat", `CF_API_TOKEN=` + v + "\n", v}
 	},
@@ -226,9 +222,12 @@ var trapGenerators = []func() string{
 	func() string { return `token: "ghp_` + strings.Repeat("0", 36) + `"` },
 	// timestamp:hash mirip Telegram
 	func() string { return `t=` + rs(digits, 10) + `:` + rs(hexL, 35) },
-	// Basic yang bukan user:pass
+	// "Basic" + base64 yang ter-decode menjadi biner (nonce/hash), bukan kredensial
 	func() string {
-		return `authorization: Basic ` + base64.StdEncoding.EncodeToString([]byte(rs(alnum, 18)))
+		raw := make([]byte, 18)
+		rng.Read(raw)
+		raw[0], raw[5] = 0x00, 0xff
+		return `authorization: Basic ` + base64.StdEncoding.EncodeToString(raw)
 	},
 	// oauth: diikuti identifier panjang (bukan Twitch token)
 	func() string { return `{oauth:handleOauthCallbackRedirectUri,state:s}` },

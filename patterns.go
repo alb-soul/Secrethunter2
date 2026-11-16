@@ -25,8 +25,11 @@ var patterns = []Pattern{
 
 	// ─── AWS ────────────────────────────────────────────────────────────────────
 	{
-		Name:     "AWS Access Key ID",
-		Regex:    regexp.MustCompile(`(?i)\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b`),
+		Name: "AWS Access Key ID",
+		// BUGFIX audit-2026-11b: `(?i)` membuat `akia…`/`asia…` huruf kecil di
+		// identifier minified ikut cocok (CRITICAL palsu). Key ID AWS selalu
+		// huruf besar + digit.
+		Regex:    regexp.MustCompile(`\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b`),
 		Severity: SevCritical,
 	},
 	{
@@ -124,9 +127,11 @@ var patterns = []Pattern{
 		MatchGroup: 1,
 	},
 	{
+		// audit-2026-11b: field type saja ada di skema/dokumentasi → MEDIUM. Varian
+		// dengan private_key di objek yang sama = CRITICAL (patterns_2026b.go).
 		Name:     "Google Cloud Service Account (type field)",
 		Regex:    regexp.MustCompile(`"type"\s*:\s*"service_account"`),
-		Severity: SevCritical,
+		Severity: SevMedium,
 	},
 	{
 		Name:       "Google Cloud Private Key ID",
@@ -352,9 +357,10 @@ var patterns = []Pattern{
 
 	// ─── Twilio ──────────────────────────────────────────────────────────────────
 	{
+		// audit-2026-11b: SID = identifier akun (bukan kredensial; butuh Auth Token).
 		Name:     "Twilio Account SID",
 		Regex:    regexp.MustCompile(`\bAC[a-f0-9]{32}\b`),
-		Severity: SevHigh,
+		Severity: SevLow,
 	},
 	{
 		Name:       "Twilio Auth Token",
@@ -363,32 +369,35 @@ var patterns = []Pattern{
 		MatchGroup: 1,
 	},
 	{
+		// SID kunci API — rahasianya terpisah (secret 32 char) → MEDIUM.
 		Name:     "Twilio API Key SID",
 		Regex:    regexp.MustCompile(`\bSK[a-f0-9]{32}\b`),
-		Severity: SevHigh,
+		Severity: SevMedium,
 	},
 	{
 		Name:     "Twilio App SID",
 		Regex:    regexp.MustCompile(`\bAP[a-f0-9]{32}\b`),
-		Severity: SevHigh,
+		Severity: SevLow,
 	},
 
 	// ─── Mailgun ─────────────────────────────────────────────────────────────────
 	{
+		// BUGFIX audit-2026-11b: tanpa \b, `monkey-…`/`hotkey-…` + 32 alnum cocok.
 		Name:     "Mailgun Private API Key",
-		Regex:    regexp.MustCompile(`key-[0-9a-zA-Z]{32}`),
+		Regex:    regexp.MustCompile(`\bkey-[0-9a-zA-Z]{32}\b`),
 		Severity: SevHigh,
 	},
 	{
+		// public validation key — dipakai di frontend.
 		Name:     "Mailgun Public API Key",
-		Regex:    regexp.MustCompile(`pubkey-[0-9a-zA-Z]{32}`),
-		Severity: SevMedium,
+		Regex:    regexp.MustCompile(`\bpubkey-[0-9a-zA-Z]{32}\b`),
+		Severity: SevLow,
 	},
 
 	// ─── Mailchimp ───────────────────────────────────────────────────────────────
 	{
 		Name:     "Mailchimp API Key",
-		Regex:    regexp.MustCompile(`[0-9a-f]{32}-us[0-9]{1,2}`),
+		Regex:    regexp.MustCompile(`\b[0-9a-f]{32}-us[0-9]{1,2}\b`),
 		Severity: SevHigh,
 	},
 
@@ -402,9 +411,15 @@ var patterns = []Pattern{
 		MatchGroup: 1,
 	},
 	{
-		Name:     "Square App ID / Client Secret",
-		Regex:    regexp.MustCompile(`sq0[a-z]{3}-[0-9A-Za-z_\-]{22,43}`),
-		Severity: SevMedium,
+		// audit-2026-11b: dipisah — sq0csp- = OAuth client SECRET, sq0idp- = app ID (publik).
+		Name:     "Square OAuth Client Secret (sq0csp-)",
+		Regex:    regexp.MustCompile(`\bsq0csp-[0-9A-Za-z_\-]{40,50}\b`),
+		Severity: SevHigh,
+	},
+	{
+		Name:     "Square Application ID (sq0idp-)",
+		Regex:    regexp.MustCompile(`\bsq0idp-[0-9A-Za-z_\-]{22,43}\b`),
+		Severity: SevLow,
 	},
 	{
 		Name:       "Square Sandbox Token",
@@ -500,9 +515,14 @@ var patterns = []Pattern{
 
 	// ─── Telegram ────────────────────────────────────────────────────────────────
 	{
-		Name:     "Telegram Bot API Token",
-		Regex:    regexp.MustCompile(`[0-9]{8,10}:[0-9A-Za-z_\-]{35}`),
-		Severity: SevHigh,
+		// BUGFIX audit-2026-11b: pola lama tanpa batas → `t=<timestamp>:<hex35>`
+		// (cache-key/etag) ikut cocok. Bagian rahasia token bot selalu diawali
+		// 'A' (AAE…/AAH…). Batas kiri non-digit (bukan \b) agar `/bot<id>:…`
+		// tetap tertangkap.
+		Name:       "Telegram Bot API Token",
+		Regex:      regexp.MustCompile(`(?:^|[^0-9])([0-9]{8,12}:A[0-9A-Za-z_\-]{34})(?:[^0-9A-Za-z_\-]|$)`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
 	},
 
 	// ─── Discord ─────────────────────────────────────────────────────────────────
@@ -512,8 +532,10 @@ var patterns = []Pattern{
 		Severity: SevHigh,
 	},
 	{
+		// audit-2026-11b: user ID baru → segmen pertama bisa diawali 'O' dan 24-26
+		// char; batas kata di kedua ujung.
 		Name:     "Discord Bot Token",
-		Regex:    regexp.MustCompile(`[MN][A-Za-z0-9_\-]{23}\.[A-Za-z0-9_\-]{6}\.[A-Za-z0-9_\-]{27,38}`),
+		Regex:    regexp.MustCompile(`\b[MNO][A-Za-z0-9_\-]{23,25}\.[A-Za-z0-9_\-]{6}\.[A-Za-z0-9_\-]{27,38}\b`),
 		Severity: SevCritical,
 	},
 	{
@@ -603,9 +625,10 @@ var patterns = []Pattern{
 		MatchGroup: 1,
 	},
 	{
-		Name:       "Algolia Application ID",
-		Regex:      regexp.MustCompile(`(?i)(?:algolia|x-algolia)[_\-\s]*(?:app(?:lication)?[_\-\s]*)?id["\']?\s*[=:]\s*['"]?([A-Z0-9]{10})['"]?`),
-		Severity:   SevMedium,
+		Name:     "Algolia Application ID",
+		Regex:    regexp.MustCompile(`(?i)(?:algolia|x-algolia)[_\-\s]*(?:app(?:lication)?[_\-\s]*)?id["\']?\s*[=:]\s*['"]?([A-Z0-9]{10})['"]?`),
+		Severity: SevLow, // identifier publik
+
 		MatchGroup: 1,
 	},
 	{
@@ -644,9 +667,10 @@ var patterns = []Pattern{
 		Severity: SevMedium,
 	},
 	{
+		// DSN publik by design (ditanam di frontend) → LOW. + region ingest (us/de).
 		Name:     "Sentry DSN",
-		Regex:    regexp.MustCompile(`https://[0-9a-f]{32}@[a-z0-9]+\.ingest\.sentry\.io/[0-9]+`),
-		Severity: SevMedium,
+		Regex:    regexp.MustCompile(`https://[0-9a-f]{32}@[a-z0-9]+\.ingest(?:\.[a-z]{2})?\.sentry\.io/[0-9]+`),
+		Severity: SevLow,
 	},
 	{
 		Name:       "Amplitude API Key",
@@ -892,18 +916,21 @@ var patterns = []Pattern{
 
 	// ─── Database Connection Strings ─────────────────────────────────────────────
 	{
+		// BUGFIX audit-2026-11b: `@` dulu opsional → `mongodb://localhost:27017/db`
+		// (tanpa kredensial) dilaporkan CRITICAL. Kini wajib user:pass@host.
 		Name:     "MongoDB URI",
-		Regex:    regexp.MustCompile(`mongodb(?:\+srv)?://[A-Za-z0-9_\-]+:[A-Za-z0-9_\-@./%]+`),
+		Regex:    regexp.MustCompile(`mongodb(?:\+srv)?://[A-Za-z0-9_\-.%]+:[^@\s"'<>/]+@[A-Za-z0-9_\-.,:]+(?:/[A-Za-z0-9_\-.]*)?`),
 		Severity: SevCritical,
 	},
 	{
+		// audit-2026-11b: + varian driver SQLAlchemy/Prisma (postgresql+psycopg2://).
 		Name:     "PostgreSQL URI",
-		Regex:    regexp.MustCompile(`postgres(?:ql)?://[A-Za-z0-9_\-]+:[^@\s]+@[A-Za-z0-9_\-.]+(?::[0-9]+)?/[A-Za-z0-9_\-]+`),
+		Regex:    regexp.MustCompile(`postgres(?:ql)?(?:\+[a-z0-9]+)?://[A-Za-z0-9_\-.%]+:[^@\s"'<>]+@[A-Za-z0-9_\-.]+(?::[0-9]+)?/[A-Za-z0-9_\-]+`),
 		Severity: SevCritical,
 	},
 	{
 		Name:     "MySQL URI",
-		Regex:    regexp.MustCompile(`mysql(?:2)?://[A-Za-z0-9_\-]+:[^@\s]+@[A-Za-z0-9_\-.]+(?::[0-9]+)?/[A-Za-z0-9_\-]+`),
+		Regex:    regexp.MustCompile(`mysql(?:2|x)?(?:\+[a-z0-9]+)?://[A-Za-z0-9_\-.%]+:[^@\s"'<>]+@[A-Za-z0-9_\-.]+(?::[0-9]+)?/[A-Za-z0-9_\-]+`),
 		Severity: SevCritical,
 	},
 	{
@@ -939,8 +966,10 @@ var patterns = []Pattern{
 		MatchGroup: 1,
 	},
 	{
+		// BUGFIX audit-2026-11b: token Twitch = 30 char huruf kecil+digit; versi
+		// lama (campur besar/kecil, tanpa batas) cocok dengan `{oauth:handleOauth…}`.
 		Name:     "Twitch OAuth Token",
-		Regex:    regexp.MustCompile(`oauth:[A-Za-z0-9]{30}`),
+		Regex:    regexp.MustCompile(`\boauth:[a-z0-9]{30}\b`),
 		Severity: SevHigh,
 	},
 
@@ -2569,7 +2598,7 @@ var patterns = []Pattern{
 	{
 		Name:     "GCP Service Account Email",
 		Regex:    regexp.MustCompile(`\b[a-z][a-z0-9\-]{4,28}@[a-z][a-z0-9\-]{4,28}\.iam\.gserviceaccount\.com\b`),
-		Severity: SevMedium,
+		Severity: SevLow, // identifier, bukan kredensial
 	},
 	{
 		// BUGFIX binus-2026-09: REDPER="Ab9xXq2xLm" (kunci enkripsi custom
@@ -2581,15 +2610,17 @@ var patterns = []Pattern{
 	},
 	{
 		// BUGFIX leaktest-2026-10: xxxxx.apps.googleusercontent.com tanpa pola.
+		// client ID OAuth publik by design (ada di setiap halaman login) → LOW.
 		Name:     "Google OAuth Client ID",
 		Regex:    regexp.MustCompile(`\b[0-9]{10,14}-[A-Za-z0-9_\-]{16,}\.apps\.googleusercontent\.com\b`),
-		Severity: SevMedium,
+		Severity: SevLow,
 	},
 	{
 		// BUGFIX binus-2026-09: clientId AzureAD/MSAL (UUID kontekstual).
+		// audit-2026-11b: identifier publik → LOW (noise terbesar di bundle SPA).
 		Name:       "OAuth Client ID (UUID)",
 		Regex:      regexp.MustCompile(`(?i)(?:client[_\-]?id|application[_\-]?(?:client[_\-]?)?id)["']?\s*[=:]\s*['"]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})['"]`),
-		Severity:   SevMedium,
+		Severity:   SevLow,
 		MatchGroup: 1,
 	},
 }

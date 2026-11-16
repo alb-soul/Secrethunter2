@@ -524,7 +524,6 @@ var genericPatterns = map[string]bool{
 	"Password assignment (pass/pwd)":                     true,
 	"URI with embedded credentials":                      true,
 	"Bearer Token in code":                               true,
-	"Bare high-entropy credentials (user:pass)":          true,
 	"Freeform credentials near keyword (user:pass)":      true,
 	"HTML comment credentials (user:pass)":               true,
 	"JS/line comment credentials (user:pass)":            true,
@@ -1196,60 +1195,217 @@ func scanContentSeq(rawURL, content, contentLower string) []Finding {
 				}
 				startPos, endPos = loc[gi], loc[gi+1]
 			}
-			match := content[startPos:endPos]
-			if match == "" {
-				continue
+			if f, ok := finalizeCandidate(rawURL, content, li, pi, startPos, endPos); ok {
+				findings = append(findings, f)
 			}
-			// v3.1: dedupe by teks-match dipindah ke dedupeOverlapping() (satu tempat)
-			// agar pola kontekstual tidak kalah oleh pola generik yang match lebih dulu.
-			if len(match) < 6 {
-				continue
-			}
-			if isPlaceholder(match) {
-				continue
-			}
-			lineNum := li.lineAt(startPos)
-			lt := li.lineTextOf(content, lineNum)
-			if dropFinding(&p, match, lt) {
-				continue
-			}
-			if p.Name == "Twitter/X Bearer Token" || strings.HasPrefix(p.Name, "Square") {
-				if strings.Contains(lt, "base64,") || strings.Contains(lt, "data:") {
-					continue
-				}
-			}
-			if standaloneTokenPatterns[p.Name] && isBase64Slice(content, startPos, endPos) {
-				continue
-			}
-			if humanCredPatterns[p.Name] && isHumanCredFP(p.Name, match, lt) {
-				continue
-			}
-			patternName := p.Name
-			severity := p.Severity
-			if publicByDesign[p.Name] {
-				if noPublicGlobal {
-					continue
-				}
-				severity = SevInfo
-			}
-			if p.Name == "JSON Web Token (JWT)" {
-				if jwtAlgIsNone(match) {
-					patternName = "JWT with alg:none (Forgeable — Auth Bypass)"
-					severity = SevCritical
-				} else {
-					severity = SevLow
-				}
-			}
-			findings = append(findings, Finding{
-				URL:      rawURL,
-				Pattern:  patternName,
-				Match:    match,
-				Severity: severity,
-				Line:     lineNum,
-			})
 		}
 	}
 	return findings
+}
+
+// finalizeCandidate menjalankan seluruh guard pasca-regex untuk satu kandidat
+// match dan mengembalikan Finding final. Satu-satunya implementasi (dipakai
+// jalur serial, paralel, dan windowed) supaya perilakunya identik.
+func finalizeCandidate(rawURL, content string, li *lineIndex, pi, startPos, endPos int) (Finding, bool) {
+	p := &patterns[pi]
+	match := content[startPos:endPos]
+	// v3.1: dedupe by teks-match dipindah ke dedupeOverlapping() (satu tempat)
+	// agar pola kontekstual tidak kalah oleh pola generik yang match lebih dulu.
+	if len(match) < 6 || isPlaceholder(match) {
+		return Finding{}, false
+	}
+	lineNum := li.lineAt(startPos)
+	lt := li.lineTextOf(content, lineNum)
+	if dropFinding(p, match, lt) {
+		return Finding{}, false
+	}
+	if p.Name == "Twitter/X Bearer Token" || strings.HasPrefix(p.Name, "Square") {
+		if strings.Contains(lt, "base64,") || strings.Contains(lt, "data:") {
+			return Finding{}, false
+		}
+	}
+	if standaloneTokenPatterns[p.Name] && isBase64Slice(content, startPos, endPos) {
+		return Finding{}, false
+	}
+	if identifierPronePatterns[p.Name] && looksLikeIdentifier(match) {
+		return Finding{}, false
+	}
+	if basicAuthPatterns[p.Name] && !basicAuthValid(match) {
+		return Finding{}, false
+	}
+	if humanCredPatterns[p.Name] && isHumanCredFP(p.Name, match, lt) {
+		return Finding{}, false
+	}
+	patternName := p.Name
+	severity := p.Severity
+	if publicByDesign[p.Name] {
+		if noPublicGlobal {
+			return Finding{}, false
+		}
+		severity = SevInfo
+	}
+	if p.Name == "JSON Web Token (JWT)" {
+		patternName, severity = classifyJWT(match)
+		if severity == SevInfo && noPublicGlobal {
+			return Finding{}, false
+		}
+	}
+	return Finding{
+		URL:      rawURL,
+		Pattern:  patternName,
+		Match:    match,
+		Severity: severity,
+		Line:     lineNum,
+	}, true
+}
+
+// identifierPronePatterns: token berprefiks pendek/generik (re_, rnd_, pa-, fc-, …)
+// yang prefiksnya juga lazim sebagai awalan identifier snake/kebab-case di bundle
+// JS/CSS (`re_render_component`, `pa-container-wrapper`). Token asli berisi
+// karakter acak base62 sehingga hampir pasti memuat digit atau huruf campuran.
+var identifierPronePatterns = map[string]bool{
+	"Resend API Key (re_)":                         true,
+	"Render API Key (rnd_)":                        true,
+	"Xata API Key (xau_)":                          true,
+	"Jina AI API Key (jina_)":                      true,
+	"Voyage AI API Key (pa-)":                      true,
+	"Cerebras API Key (csk-)":                      true,
+	"NVIDIA NIM API Key (nvapi-)":                  true,
+	"Fireworks AI Key (fw_)":                       true,
+	"Tavily API Key (tvly-)":                       true,
+	"Firecrawl API Key (fc-)":                      true,
+	"LlamaCloud / LlamaIndex Key (llx-)":           true,
+	"Apify API Token (apify_api_)":                 true,
+	"n8n Personal API Key (n8n_api_)":              true,
+	"RunPod API Key (rpa_)":                        true,
+	"Honeybadger API Key (hbp_)":                   true,
+	"Weglot API Key":                               true,
+	"Mailgun Private API Key":                      true,
+	"Mailgun Public API Key":                       true,
+	"crates.io API Token (cio)":                    true,
+	"Typeform Personal Token (tfp_)":               true,
+	"Docker Hub Personal Access Token (dckr_pat_)": true,
+	"Cal.com API Key (cal_live/cal_test)":          true,
+	"Grafana Cloud Access Policy Token (glc_)":     true,
+	"Axiom.co Dataset Token (xaat-)":               true,
+	"GitLab OAuth App Secret (gloas-)":             true,
+	"GitLab Pipeline Trigger Token (glptt-)":       true,
+	"GitLab Feed Token (glfeed-)":                  true,
+	"Figma Access Token (figd_/figu_/figr_)":       true,
+	"Pinecone API Key (pcsk_)":                     true,
+	"Ory API Key (ory_pat_/ory_apikey_/ory_wak_)":  true,
+	"Supabase Publishable Key (sb_publishable_)":   true,
+	"Supabase Secret Key (sb_secret_)":             true,
+	"PostHog Personal API Key (phx_)":              true,
+	"PostHog Project API Key (phc_)":               true,
+	"Vercel Access Token (vcp_)":                   true,
+	"Stytch Live Secret (secret-live-)":            true,
+	"Stytch Test Secret (secret-test-)":            true,
+	"PlanetScale Service Token (pscale_tkn_)":      true,
+	"PlanetScale DB Password (pscale_pw_)":         true,
+	"PlanetScale OAuth Token (pscale_oauth_)":      true,
+	"Vault Service Token (hvs.)":                   true,
+	"Vault Batch Token (hvb.)":                     true,
+	"Vault Recovery Token (hvr.)":                  true,
+	"Midtrans Server Key":                          true,
+	"Midtrans Client Key (public)":                 true,
+	"Mercado Pago Credential (APP_USR-)":           true,
+	"Omise Secret Key":                             true,
+	"Omise Public Key (public)":                    true,
+	"Toss Payments Secret Key":                     true,
+	"Toss Payments Client Key (public)":            true,
+	"Wompi Private Key":                            true,
+	"Wompi Integrity/Events Secret":                true,
+	"Wompi Public Key (public)":                    true,
+	"Vercel Blob Read-Write Token":                 true,
+	"WorkOS Secret Key (sk_test/sk_prod/sk_live)":  true,
+	"Netlify Personal Access Token (nfp_)":         true,
+	"Sentry Auth Token (sntrys_/sntryu_)":          true,
+	"Tailscale Auth/API Key (tskey-)":              true,
+}
+
+// looksLikeIdentifier: tanpa digit DAN huruf satu jenis (semua kecil / semua
+// besar) → identifier/kata (snake/kebab-case), bukan token acak.
+func looksLikeIdentifier(m string) bool {
+	var digit, up, low bool
+	for i := 0; i < len(m); i++ {
+		c := m[i]
+		switch {
+		case c >= '0' && c <= '9':
+			digit = true
+		case c >= 'A' && c <= 'Z':
+			up = true
+		case c >= 'a' && c <= 'z':
+			low = true
+		}
+	}
+	return !digit && !(up && low)
+}
+
+// basicAuthPatterns: nilai = base64(user:pass); divalidasi dengan decode.
+var basicAuthPatterns = map[string]bool{
+	"Authorization: Basic header": true,
+	"Basic Auth Token in code":    true,
+}
+
+// basicAuthValid: base64 harus ter-decode menjadi teks printable (UTF-8 valid,
+// tanpa karakter kontrol). Umumnya `user:pass`, tapi ':' TIDAK diwajibkan —
+// kasus nyata (binus-2026-09) memakai `Basic base64(UUID)`. Yang ditolak:
+// base64 yang ter-decode menjadi biner (nonce, hash, id acak).
+func basicAuthValid(b64 string) bool {
+	s := strings.TrimSpace(b64)
+	raw, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		raw, err = base64.RawStdEncoding.DecodeString(strings.TrimRight(s, "="))
+		if err != nil {
+			return false
+		}
+	}
+	if len(raw) < 4 || !utf8.Valid(raw) {
+		return false
+	}
+	for _, r := range string(raw) {
+		if r < 32 || r == 0x7f || r == utf8.RuneError {
+			return false
+		}
+	}
+	return true
+}
+
+// classifyJWT menentukan nama & severity temuan JWT dari header/payload:
+// alg:none → CRITICAL; Supabase service_role → CRITICAL (bypass RLS);
+// Supabase anon → INFO (publik by design); lainnya LOW.
+func classifyJWT(token string) (string, string) {
+	if jwtAlgIsNone(token) {
+		return "JWT with alg:none (Forgeable — Auth Bypass)", SevCritical
+	}
+	claims := jwtClaims(token)
+	role, _ := claims["role"].(string)
+	iss, _ := claims["iss"].(string)
+	switch {
+	case role == "service_role":
+		return "Supabase Service Role Key (JWT role=service_role)", SevCritical
+	case role == "anon" && strings.Contains(strings.ToLower(iss), "supabase"):
+		return "Supabase Anon Key (JWT, public)", SevInfo
+	}
+	return "JSON Web Token (JWT)", SevLow
+}
+
+func jwtClaims(token string) map[string]any {
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) < 2 {
+		return nil
+	}
+	seg := strings.TrimRight(parts[1], "=")
+	raw, err := base64.RawURLEncoding.DecodeString(seg)
+	if err != nil {
+		return nil
+	}
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	return m
 }
 
 // collectCandidates menjalankan regex untuk rentang pattern [s,e) dan
@@ -1321,55 +1477,9 @@ func mergeCandidates(rawURL, content string, groups [][]patternCandidate) []Find
 	var findings []Finding
 	for _, g := range groups {
 		for _, c := range g {
-			match := content[c.startPos:c.endPos]
-			// v3.1: dedupe by teks-match dipindah ke dedupeOverlapping() (satu tempat)
-			// agar pola kontekstual tidak kalah oleh pola generik yang match lebih dulu.
-			if len(match) < 6 {
-				continue
+			if f, ok := finalizeCandidate(rawURL, content, li, c.pi, c.startPos, c.endPos); ok {
+				findings = append(findings, f)
 			}
-			if isPlaceholder(match) {
-				continue
-			}
-			p := &patterns[c.pi]
-			lineNum := li.lineAt(c.startPos)
-			lt := li.lineTextOf(content, lineNum)
-			if dropFinding(p, match, lt) {
-				continue
-			}
-			if p.Name == "Twitter/X Bearer Token" || strings.HasPrefix(p.Name, "Square") {
-				if strings.Contains(lt, "base64,") || strings.Contains(lt, "data:") {
-					continue
-				}
-			}
-			if standaloneTokenPatterns[p.Name] && isBase64Slice(content, c.startPos, c.endPos) {
-				continue
-			}
-			if humanCredPatterns[p.Name] && isHumanCredFP(p.Name, match, lt) {
-				continue
-			}
-			patternName := p.Name
-			severity := p.Severity
-			if publicByDesign[p.Name] {
-				if noPublicGlobal {
-					continue
-				}
-				severity = SevInfo
-			}
-			if p.Name == "JSON Web Token (JWT)" {
-				if jwtAlgIsNone(match) {
-					patternName = "JWT with alg:none (Forgeable — Auth Bypass)"
-					severity = SevCritical
-				} else {
-					severity = SevLow
-				}
-			}
-			findings = append(findings, Finding{
-				URL:      rawURL,
-				Pattern:  patternName,
-				Match:    match,
-				Severity: severity,
-				Line:     lineNum,
-			})
 		}
 	}
 	return findings
@@ -1409,7 +1519,8 @@ var standaloneTokenPatterns = map[string]bool{
 	"Slack App-level Token (xapp-)":                    true,
 	"Slack OAuth v2 Token (xoxe-)":                     true,
 	"Square Access Token":                              true,
-	"Square App ID / Client Secret":                    true,
+	"Square OAuth Client Secret (sq0csp-)":             true,
+	"Square Application ID (sq0idp-)":                  true,
 	"Square Sandbox Token":                             true,
 	"Twitter/X Bearer Token":                           true,
 	"Twilio Account SID":                               true,
@@ -1497,14 +1608,16 @@ var standaloneTokenPatterns = map[string]bool{
 	"PlanetScale OAuth Token (pscale_oauth_)":          true,
 	"Supabase Publishable Key (sb_publishable_)":       true,
 	"Supabase Secret Key (sb_secret_)":                 true,
-	"Clerk Secret Key (sk_live_/sk_test_)":             true,
+	"Clerk Secret Key (sk_live_)":                      true,
+	"Clerk Secret Key (sk_test_)":                      true,
 	"Clerk Publishable Key (pk_live_/pk_test_)":        true,
 	"WorkOS Secret Key (sk_test/sk_prod/sk_live)":      true,
 	"Cal.com API Key (cal_live/cal_test)":              true,
 	"SendGrid API Key":                                 true,
 	"Brevo API Key (xkeysib-)":                         true,
 	"Brevo SMTP Key (xsmtpsib-)":                       true,
-	"Flutterwave Secret/Public Key (FLW...-X)":         true,
+	"Flutterwave Secret Key (FLWSECK...)":              true, // audit-2026-11b: nama lama salah ketik → guard tak aktif
+	"Flutterwave Public Key (FLWPUBK...)":              true,
 	"Shippo API Key":                                   true,
 	"Typeform Personal Token (tfp_)":                   true,
 	"Adafruit IO Key (aio_)":                           true,
@@ -1527,7 +1640,8 @@ var standaloneTokenPatterns = map[string]bool{
 	"Salesforce Access Token":                          true,
 	"Yandex API Key (AQVN)":                            true,
 	"ClickUp Personal Token (pk_<id>_)":                true,
-	"Stytch Secret (secret-live/test-)":                true,
+	"Stytch Live Secret (secret-live-)":                true,
+	"Stytch Test Secret (secret-test-)":                true,
 	"crates.io API Token (cio)":                        true,
 	"Cloudflare Turnstile Secret Key (0x4AAAA, long)":  true,
 	"Cloudflare Turnstile Site Key (0x4AAAA)":          true,
@@ -1543,7 +1657,6 @@ var standaloneTokenPatterns = map[string]bool{
 	"Supabase Service Role Key":                        true,
 	"Slack Webhook URL":                                true,
 	"Mailchimp API Key":                                true,
-	"Telegram Bot API Token":                           true,
 	"Microsoft Teams Webhook":                          true,
 	"Azure SAS Token":                                  true,
 	"Asana Personal Access Token":                      true,
@@ -1585,11 +1698,16 @@ func isBase64Slice(content string, startPos, endPos int) bool {
 	}
 	if endPos < len(content) {
 		if c := content[endPos]; isB64(c) || c == '=' {
+			// BUGFIX audit-2026-11b: dulu menghitung karakter b64 di jendela 128
+			// char secara TIDAK kontigu, sehingga token yang diikuti `/path");
+			// hook="https://…` (teks biasa) dianggap potongan blob dan dibuang.
+			// Yang menandai blob adalah RUN kontigu yang panjang.
 			n := 0
-			for i := endPos; i < len(content) && i < endPos+128; i++ {
-				if isB64(content[i]) || content[i] == '=' {
-					n++
+			for i := endPos; i < len(content) && n < 64; i++ {
+				if !isB64(content[i]) && content[i] != '=' {
+					break
 				}
+				n++
 			}
 			if n >= 64 {
 				return true
@@ -2014,20 +2132,51 @@ func hasMixedCase(s string) bool {
 	return lower && upper
 }
 
+// placeholderWords: substring yang menandai nilai contoh/dokumentasi. Kata ≥5
+// huruf hampir mustahil muncul kebetulan di token acak, jadi cukup substring.
+var placeholderWords = []string{
+	"your_", "yourkey", "yourapikey", "your-api", "example",
+	"changeme", "replace", "xxxxxxxx", "aaaaaaaa", "11111111",
+	"00000000", "test123", "password123", "secret123",
+	"<api", "api_key>", "token>", "{api", "{key", "${",
+	"xxxx", "yyyy", "zzzz", "undefined",
+	"placeholder", "insert_", "insert-", "redacted", "dummy",
+	"sample", "lorem", "qwerty", "abc123", "string", "fixme",
+}
+
+// placeholderShortWords: kata 4 huruf yang ±1/1000 token base62 acak
+// memuatnya secara kebetulan (BUGFIX audit-2026-11b: dulu substring → key asli
+// seperti `…xNuLl7…` dibuang). Kini hanya placeholder bila berdiri sebagai
+// segmen: diapit non-alfanumerik / awal / akhir (`sk_live_none`, `TODO-key`).
+var placeholderShortWords = []string{"none", "null", "todo", "asdf"}
+
+func isAlnumByte(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+}
+
+func containsSegment(lower, w string) bool {
+	for i := 0; ; {
+		j := strings.Index(lower[i:], w)
+		if j < 0 {
+			return false
+		}
+		s, e := i+j, i+j+len(w)
+		if (s == 0 || !isAlnumByte(lower[s-1])) && (e == len(lower) || !isAlnumByte(lower[e])) {
+			return true
+		}
+		i = s + 1
+	}
+}
+
 func isPlaceholder(s string) bool {
 	lower := strings.ToLower(s)
-	placeholders := []string{
-		"your_", "yourkey", "yourapikey", "your-api", "example",
-		"changeme", "replace", "xxxxxxxx", "aaaaaaaa", "11111111",
-		"00000000", "test123", "password123", "secret123",
-		"<api", "api_key>", "token>", "{api", "{key", "${",
-		"xxxx", "yyyy", "zzzz", "none", "undefined", "null",
-		"placeholder", "insert_", "insert-", "redacted", "dummy",
-		"sample", "lorem", "asdf", "qwerty", "abc123", "string",
-		"todo", "fixme",
-	}
-	for _, p := range placeholders {
+	for _, p := range placeholderWords {
 		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	for _, w := range placeholderShortWords {
+		if containsSegment(lower, w) {
 			return true
 		}
 	}

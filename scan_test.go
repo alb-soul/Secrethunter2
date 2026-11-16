@@ -138,7 +138,7 @@ func TestBinusMissingSecrets(t *testing.T) {
 	fired(t, `var getApiSIDAuthToken="Basic RUM5NjhDN0YtMzExNS00MjNDLUE4MjctMzRCNTZDQTM5MzFD";`, "Basic Auth Token in code", "HIGH")
 	fired(t, `var getApiExamToken="Basic MENCQjBDMzUtMENDMi00NEIyLUI4REQtOUQzNDg1RkRGMDQ4";`, "Basic Auth Token in code", "HIGH")
 	fired(t, `REDPER="Ab9xXq2xLm"`, "Encryption Key in code", "HIGH")
-	fired(t, `clientId="ad768ba0-0059-46cf-ac71-c4e627361377"`, "OAuth Client ID (UUID)", "MEDIUM")
+	fired(t, `clientId="ad768ba0-0059-46cf-ac71-c4e627361377"`, "OAuth Client ID (UUID)", "LOW") // audit-2026-11b: identifier publik
 	notFired(t, `var x="eyTunggakanKeuanganPrivileges.SurveyOutstandingMasterConfiguration.Menu";`, "JSON Web Token (JWT)")
 }
 
@@ -324,7 +324,7 @@ func TestCrossTalkDedup(t *testing.T) {
 func TestMoreFamilies2(t *testing.T) {
 	cases := []struct{ content, name string }{
 		{`github_client_secret = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"`, "GitHub Client Secret"},
-		{`client_id=sq0idp-AbCdEfGhIjKlMnOpQrStUvWx12`, "Square App ID / Client Secret"},
+		{`client_id=sq0idp-AbCdEfGhIjKlMnOpQrStUvWx12`, "Square Application ID (sq0idp-)"},
 		{`jdbc:oracle:thin:scott/tiger@dbhost:1521/orcl`, "Oracle JDBC Thin URL"},
 		{`dbhost:5432:mydb:bob:s3cretPass99`, "PostgreSQL .pgpass entry"},
 		{`travis_token = "AbCdEfGhIjKlMnOpQrStUvWx12"`, ""},

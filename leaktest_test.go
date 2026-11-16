@@ -6,7 +6,7 @@ import "testing"
 func TestLeaktestNewPatterns(t *testing.T) {
 	fired(t, `const K="pk_test_51Ab3TestLeak7192XyZabcdefgh"`, "Stripe Test Publishable/Restricted Key", "MEDIUM")
 	fired(t, `u="https://x-demo-1-default-rtdb.firebaseio.com"`, "Firebase Realtime Database URL", "LOW")
-	fired(t, `id="123456789012-testleakabcdefghij012345.apps.googleusercontent.com"`, "Google OAuth Client ID", "MEDIUM")
+	fired(t, `id="123456789012-testleakabcdefghij012345.apps.googleusercontent.com"`, "Google OAuth Client ID", "LOW") // audit-2026-11b: publik by design
 	fired(t, `pass: "TestLeak456"`, "Password assignment (pass/pwd)", "LOW")
 	// pwd dicover pola lama (dedup by match -> pola lama menang, ekspektasi dipertahankan)
 	fired(t, `pwd="DbPass2026!"`, "Password assignment (quoted or bare)", "MEDIUM")
