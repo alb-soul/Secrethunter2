@@ -35,7 +35,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"regexp/syntax"
 	"runtime"
 	"sort"
 	"strconv"
@@ -484,29 +483,15 @@ func jwtAlgIsNone(token string) bool {
 	return strings.EqualFold(header.Alg, "none")
 }
 
-// ─── Keyword prefilter (v2) ────────────────────────────────────────────────────
+// ─── Literal gate ────────────────────────────────────────────────────────────
 //
-// patternPrefilter[i] = literal lowercase yang WAJIB ada di konten agar pola i
-// bisa match. Diturunkan AMAN dari regex.String() (tidak akan false-negative):
-// hanya diambil bila literal itu benar-benar prefix wajib dari match.
-
-// patternPrefilter sudah tidak dipakai di jalur panas: gate literal kini
-// diturunkan dari AST regexp (lihat patternNeeds) dan mencakup kasus prefix
-// literal maupun alternasi.
-
-// patternNeeds[i] = gate literal untuk pola i, diturunkan dari AST regexp.
-// Bentuknya DNF sederhana: AND antar-group, OR di dalam group.
-// Contoh `\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b` → satu group {akia,abia,acca,asia}
-// (match pasti mengandung salah satunya), sedangkan `foo bar` → dua group.
-// Gate ini menyumbang percepatan besar: 135 dari 448 pola sebelumnya tidak
-// punya gate sama sekali sehingga regex mahal selalu dijalankan.
+// Gate literal per pola (DNF: AND antar-group, OR di dalam group) diturunkan
+// dari AST regexp dan dicocokkan dengan satu pass Aho-Corasick — lihat engine.go.
 type needLit struct {
 	lit  string
-	fold bool // case-insensitive → cek pada contentLower
+	fold bool // case-insensitive (lit sudah lowercase ASCII)
 }
 type litGroup []needLit // OR
-
-var patternNeeds [][]litGroup
 
 // patternIndex: nama pola → urutan deklarasi. Dipakai dedupeOverlapping sebagai
 // tie-break (pola yang dideklarasikan lebih awal = keluarga yang lebih spesifik:
@@ -537,14 +522,13 @@ var genericPatterns = map[string]bool{
 func init() {
 	patterns = append(patterns, extraPatterns...)
 	patterns = append(patterns, coveragePatterns2026b...)
-	patternNeeds = make([][]litGroup, len(patterns))
 	patternIndex = make(map[string]int, len(patterns))
 	for i, p := range patterns {
-		patternNeeds[i] = requiredLiterals(p.Regex.String())
 		if _, dup := patternIndex[p.Name]; !dup {
 			patternIndex[p.Name] = i
 		}
 	}
+	buildEngine()
 }
 
 // betterFinding melaporkan apakah temuan a lebih disukai daripada b.
@@ -574,113 +558,6 @@ func patternIndexOf(patternName string) int {
 	return len(patterns)
 }
 
-// requiredLiterals mengekstrak gate literal wajib dari sebuah pola (kosong = tanpa gate).
-func requiredLiterals(src string) []litGroup {
-	re, err := syntax.Parse(src, syntax.Perl)
-	if err != nil {
-		return nil
-	}
-	groups, ok := requiredLits(re.Simplify())
-	if !ok || len(groups) == 0 {
-		return nil
-	}
-	return groups
-}
-
-// requiredLits mengembalikan group literal yang HARUS terpenuhi setiap match.
-// ok=false berarti subtree ini tidak bisa dijadikan gate (mis. opsional).
-func requiredLits(re *syntax.Regexp) ([]litGroup, bool) {
-	switch re.Op {
-	case syntax.OpLiteral:
-		if len(re.Rune) < 4 {
-			return nil, false
-		}
-		lit := string(re.Rune)
-		if re.Flags&syntax.FoldCase != 0 {
-			// pencocokan case-insensitive: hanya aman untuk ASCII murni
-			for _, r := range lit {
-				if r > 127 {
-					return nil, false
-				}
-			}
-			return []litGroup{{{lit: strings.ToLower(lit), fold: true}}}, true
-		}
-		return []litGroup{{{lit: lit}}}, true
-	case syntax.OpCapture, syntax.OpPlus:
-		if len(re.Sub) == 0 {
-			return nil, false
-		}
-		return requiredLits(re.Sub[0])
-	case syntax.OpRepeat:
-		if re.Min < 1 || len(re.Sub) == 0 {
-			return nil, false
-		}
-		return requiredLits(re.Sub[0])
-	case syntax.OpConcat:
-		// semua anak harus match → gabungan (AND) gate tiap anak tetap wajib
-		var out []litGroup
-		for _, sub := range re.Sub {
-			gs, ok := requiredLits(sub)
-			if !ok {
-				continue
-			}
-			out = append(out, gs...)
-		}
-		return out, true
-	case syntax.OpAlternate:
-		// setiap match memenuhi tepat satu cabang → hanya literal yang muncul
-		// di SEMUA cabang (group pertama tiap cabang) yang aman dijadikan gate.
-		if len(re.Sub) == 0 {
-			return nil, false
-		}
-		union := map[string]needLit{}
-		for _, sub := range re.Sub {
-			gs, ok := requiredLits(sub)
-			if !ok || len(gs) == 0 {
-				return nil, false
-			}
-			for _, l := range gs[0] {
-				union[l.lit] = l
-			}
-		}
-		if len(union) == 0 {
-			return nil, false
-		}
-		g := make(litGroup, 0, len(union))
-		for _, l := range union {
-			g = append(g, l)
-		}
-		sort.Slice(g, func(i, j int) bool { return g[i].lit < g[j].lit })
-		return []litGroup{g}, true
-	}
-	return nil, false
-}
-
-// prefiltersAllow melaporkan apakah pola ke-pi masih mungkin match di konten.
-func prefiltersAllow(pi int, content, contentLower string) bool {
-	for _, g := range patternNeeds[pi] {
-		ok := false
-		for _, n := range g {
-			if n.fold {
-				if strings.Contains(contentLower, n.lit) {
-					ok = true
-					break
-				}
-			} else if strings.Contains(content, n.lit) {
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return false
-		}
-	}
-	return true
-}
-
-// derivePrefilter mengembalikan substring literal wajib (lowercase) atau "".
-// Konservatif: jika ada keraguan (quantifier/alternation di ujung literal),
-// kembalikan "" agar pola tetap dijalankan (tidak melewatkan finding).
 // ─── Scanner ──────────────────────────────────────────────────────────────────
 
 type lineIndex struct{ starts []int }
@@ -1086,8 +963,7 @@ func decodedVariants(content string) []string {
 }
 
 func scanContent(rawURL, content string) []Finding {
-	contentLower := strings.ToLower(content) // v3/v2: sekali, untuk prefilter
-	base := scanSingle(rawURL, content, contentLower)
+	base := scanSingle(rawURL, content)
 	if noDecodeGlobal {
 		return dedupeOverlapping(base)
 	}
@@ -1101,7 +977,7 @@ func scanContent(rawURL, content string) []Finding {
 	}
 	out := base
 	for _, v := range vars {
-		for _, f := range scanSingle(rawURL, v, strings.ToLower(v)) {
+		for _, f := range scanSingle(rawURL, v) {
 			if _, dup := seen[f.Pattern+"\x00"+f.Match]; dup {
 				continue
 			}
@@ -1169,40 +1045,19 @@ func dedupeOverlapping(in []Finding) []Finding {
 	return out
 }
 
-func scanSingle(rawURL, content, contentLower string) []Finding {
+// scanSingle memindai satu teks: satu pass Aho-Corasick (engine.go) lalu regex
+// per pola (window/full). Body ≥1 MB: pola dibagi ke beberapa goroutine.
+func scanSingle(rawURL, content string) []Finding {
 	if len(content) >= parallelScanMinBytes && len(patterns) > 1 {
-		return scanContentPar(rawURL, content, contentLower)
+		return scanContentPar(rawURL, content)
 	}
-	return scanContentSeq(rawURL, content, contentLower)
+	return scanContentSeq(rawURL, content)
 }
 
-func scanContentSeq(rawURL, content, contentLower string) []Finding {
-	var findings []Finding
-	li := buildLineIndex(content)
-
-	for pi, p := range patterns {
-		// v2: prefilter murah sebelum regex mahal
-		if !prefiltersAllow(pi, content, contentLower) {
-			continue
-		}
-		locs := p.Regex.FindAllStringSubmatchIndex(content, -1)
-		for _, loc := range locs {
-			var startPos, endPos int
-			if p.MatchGroup == 0 {
-				startPos, endPos = loc[0], loc[1]
-			} else {
-				gi := 2 * p.MatchGroup
-				if gi+1 >= len(loc) || loc[gi] < 0 {
-					continue
-				}
-				startPos, endPos = loc[gi], loc[gi+1]
-			}
-			if f, ok := finalizeCandidate(rawURL, content, li, pi, startPos, endPos); ok {
-				findings = append(findings, f)
-			}
-		}
-	}
-	return findings
+func scanContentSeq(rawURL, content string) []Finding {
+	occ := engAC.find(content)
+	defer occ.release()
+	return mergeCandidates(rawURL, content, [][]patternCandidate{collectCandidates(content, occ, 0, len(patterns))})
 }
 
 // finalizeCandidate menjalankan seluruh guard pasca-regex untuk satu kandidat
@@ -1433,56 +1288,44 @@ func jwtClaims(token string) map[string]any {
 
 // collectCandidates menjalankan regex untuk rentang pattern [s,e) dan
 // mengembalikan kandidat mentah (belum di-filter / dedup global).
-func collectCandidates(content, contentLower string, s, e int) []patternCandidate {
+func collectCandidates(content string, occ *occTable, s, e int) []patternCandidate {
 	var out []patternCandidate
 	for pi := s; pi < e; pi++ {
-		p := &patterns[pi]
-		if !prefiltersAllow(pi, content, contentLower) {
-			continue
-		}
-		if p.MatchGroup == 0 {
-			for _, loc := range p.Regex.FindAllStringIndex(content, -1) {
-				if loc[1] > loc[0] {
-					out = append(out, patternCandidate{pi: pi, startPos: loc[0], endPos: loc[1]})
-				}
-			}
-		} else {
-			for _, loc := range p.Regex.FindAllStringSubmatchIndex(content, -1) {
-				gi := 2 * p.MatchGroup
-				if gi+1 >= len(loc) || loc[gi] < 0 {
-					continue
-				}
-				if loc[gi+1] > loc[gi] {
-					out = append(out, patternCandidate{pi: pi, startPos: loc[gi], endPos: loc[gi+1]})
-				}
-			}
-		}
+		out = patternCandidates(pi, content, occ, out)
 	}
 	return out
 }
 
-func scanContentPar(rawURL, content, contentLower string) []Finding {
+// scanContentPar: body besar — pola dibagikan dinamis (work-stealing lewat
+// counter atomik) karena biaya per pola sangat timpang (window vs full scan).
+// Kandidat disimpan per indeks pola lalu digabung berurutan → hasil identik
+// dengan versi serial.
+func scanContentPar(rawURL, content string) []Finding {
+	occ := engAC.find(content)
+	defer occ.release()
 	np := len(patterns)
 	workers := parallelScanWorkers
-	if workers > np {
-		workers = np
+	if n := runtime.GOMAXPROCS(0); workers > n {
+		workers = n
 	}
-	groups := make([][]patternCandidate, workers)
+	perPat := make([][]patternCandidate, np)
+	var next atomic.Int32
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
-		s := w * np / workers
-		e := (w + 1) * np / workers
-		if s >= e {
-			continue
-		}
 		wg.Add(1)
-		go func(w, s, e int) {
+		go func() {
 			defer wg.Done()
-			groups[w] = collectCandidates(content, contentLower, s, e)
-		}(w, s, e)
+			for {
+				pi := int(next.Add(1)) - 1
+				if pi >= np {
+					return
+				}
+				perPat[pi] = patternCandidates(pi, content, occ, nil)
+			}
+		}()
 	}
 	wg.Wait()
-	return mergeCandidates(rawURL, content, groups)
+	return mergeCandidates(rawURL, content, perPat)
 }
 
 // mergeCandidates meniru persis post-processing serial dan menjaga total order:
@@ -3099,6 +2942,7 @@ func main() {
 		flagInsecureL   = flag.Bool("insecure", false, "Skip TLS certificate verification (alias for -k)")
 		flagProxy       = flag.String("proxy", "", "Explicit proxy URL (default: HTTP(S)_PROXY env)")
 		flagNoDecode    = flag.Bool("no-decode", false, "Disable obfuscated-layer decode pass (faster, fewer findings)")
+		flagNoWindow    = flag.Bool("no-window", false, "Run each gated regex over the whole body instead of literal windows (slower; debugging)")
 		flagJSCrawl     = flag.Int("js-crawl", 0, "On HTML targets, also fetch and scan up to N same-host <script src> files (0=off)")
 	)
 	var headers multiFlag
@@ -3115,6 +2959,7 @@ func main() {
 	flag.Parse()
 	noPublicGlobal = *flagNoPublic
 	noDecodeGlobal = *flagNoDecode
+	noWindowGlobal = *flagNoWindow
 
 	if *flagVersion {
 		fmt.Printf("secrethunter2 v%s\n", version)

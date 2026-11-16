@@ -534,8 +534,11 @@ var patterns = []Pattern{
 	{
 		// audit-2026-11b: user ID baru → segmen pertama bisa diawali 'O' dan 24-26
 		// char; batas kata di kedua ujung.
-		Name:     "Discord Bot Token",
-		Regex:    regexp.MustCompile(`\b[MNO][A-Za-z0-9_\-]{23,25}\.[A-Za-z0-9_\-]{6}\.[A-Za-z0-9_\-]{27,38}\b`),
+		Name: "Discord Bot Token",
+		// Segmen pertama = base64(user ID numerik berawalan 1-9) → selalu diawali
+		// MT|Mj|Mz (1-3), ND|NT|Nj|Nz (4-7), OD|OT (8-9). Prefix eksplisit juga
+		// memberi gate literal (dulu pola tanpa gate → full scan mahal).
+		Regex:    regexp.MustCompile(`\b(?:M[Tjz]|N[DTjz]|O[DT])[A-Za-z0-9_\-]{22,24}\.[A-Za-z0-9_\-]{6}\.[A-Za-z0-9_\-]{27,38}\b`),
 		Severity: SevCritical,
 	},
 	{
@@ -841,8 +844,10 @@ var patterns = []Pattern{
 		Severity: SevHigh,
 	},
 	{
+		// audit-2026-11b: format nyata `1/<user gid 12-20 digit>[/<app gid>]:<32 hex>`
+		// (pola lama `\d/[A-Za-z0-9]{18}:` tidak cocok dengan gid 16 digit).
 		Name:     "Asana Personal Access Token",
-		Regex:    regexp.MustCompile(`\d/[A-Za-z0-9]{18}:[a-f0-9]{32}`),
+		Regex:    regexp.MustCompile(`\b[0-9]{1,2}/[0-9]{12,20}(?:/[0-9]{12,20})?:[a-f0-9]{32}\b`),
 		Severity: SevHigh,
 	},
 	{
@@ -1702,9 +1707,12 @@ var patterns = []Pattern{
 		Severity: SevCritical,
 	},
 	{
-		Name:     "Ghost Admin API Key (id:secret)",
-		Regex:    regexp.MustCompile(`\b[0-9a-f]{24}:[0-9a-f]{64}\b`),
-		Severity: SevHigh,
+		// audit-2026-11b: `hex24:hex64` tanpa konteks juga cocok dengan
+		// ObjectId:sha256 (cache key/etag) → wajib konteks ghost / admin key.
+		Name:       "Ghost Admin API Key (id:secret)",
+		Regex:      regexp.MustCompile(`(?i)(?:ghost|admin[_\-]?(?:api[_\-]?)?key)[^\n]{0,40}?\b([0-9a-f]{24}:[0-9a-f]{64})\b`),
+		Severity:   SevHigh,
+		MatchGroup: 1,
 	},
 	{
 		Name:     "LaunchDarkly SDK/Mobile/API Key (sdk-/mob-/api-)",

@@ -375,9 +375,8 @@ func TestParallelEquivalence(t *testing.T) {
 	if len(content) < 1024*1024 {
 		t.Fatalf("test content too small: %d", len(content))
 	}
-	lower := strings.ToLower(content)
-	seq := scanContentSeq("t://x", content, lower)
-	par := scanContentPar("t://x", content, lower)
+	seq := scanContentSeq("t://x", content)
+	par := scanContentPar("t://x", content)
 	key := func(f Finding) string { return f.Pattern + "\x00" + f.Match + "\x00" + f.Severity }
 	a, b := map[string]int{}, map[string]int{}
 	for _, f := range seq {

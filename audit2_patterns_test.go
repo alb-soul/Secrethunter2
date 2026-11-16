@@ -161,6 +161,28 @@ func TestAudit2SeverityIdentifiers(t *testing.T) {
 	}
 }
 
+func TestAudit2AsanaGhostFormats(t *testing.T) {
+	hex32 := rep("6d0a4f3b2c1e9a8b7c6d5e4f3a2b1c0d", 32)
+	mustFire(t, cat(`ASANA_PAT="1/`, "1203946391876437", ":", hex32, `"`), "Asana Personal Access Token")
+	mustFire(t, cat(`token: "2/`, "1203946391876437/1209876543210987", ":", hex32, `"`), "Asana Personal Access Token")
+	mustNotFire(t, cat(`path="a/b`, "/1203946391876437", ":xyz"), "Asana Personal Access Token")
+
+	id24, sec64 := rep("5f1e2d3c4b5a69788796a5b4", 24), rep("a1b2c3d4e5f60718293a4b5c6d7e8f90", 64)
+	mustFire(t, `const api = new GhostAdminAPI({url, key: '`+id24+`:`+sec64+`'});`, "Ghost Admin API Key (id:secret)")
+	mustFire(t, `GHOST_ADMIN_API_KEY=`+id24+`:`+sec64, "Ghost Admin API Key (id:secret)")
+	// ObjectId:sha256 di cache/etag tanpa konteks Ghost — bukan kredensial
+	mustNotFire(t, `{"cacheKey":"`+id24+`:`+sec64+`"}`, "Ghost Admin API Key (id:secret)")
+}
+
+func TestAudit2PgpassPrefilter(t *testing.T) {
+	if !prePgpass("# comment\ndbhost:5432:mydb:bob:s3cretPass99\n") {
+		t.Fatal("prePgpass menolak baris .pgpass valid")
+	}
+	if prePgpass("a: 1, b: 2, c: 3, d: 4\nx:y z:w") {
+		t.Fatal("prePgpass menerima baris dengan spasi sebelum colon ke-4")
+	}
+}
+
 // isBase64Slice: hanya RUN base64 kontigu panjang di kanan yang menandai
 // potongan blob; teks biasa setelah '/' tidak boleh membuang token.
 func TestAudit2Base64SliceContiguous(t *testing.T) {
