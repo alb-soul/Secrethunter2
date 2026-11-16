@@ -1,6 +1,6 @@
 # secrethunter2
 
-**Secret & Credential Scanner for Bug Bounty Recon** — detects 448 token/credential patterns across web responses, JS bundles, and local files.
+**Secret & Credential Scanner for Bug Bounty Recon** — detects 483 token/credential patterns across web responses, JS bundles, and local files.
 
 ```
  _____                     _   _   _             _
@@ -13,12 +13,13 @@
 
 ## Features
 
-- **448 verified patterns** — AWS, GCP, Azure, OpenAI, Anthropic, NVIDIA, Alibaba, Tencent, Discord, Slack, Stripe, JWT, private keys, DBURIs, and 150+ more
+- **483 verified patterns** — AWS, GCP, Azure, OpenAI, Anthropic, NVIDIA, Alibaba, Tencent, Discord, Slack, Stripe, JWT, private keys, DBURIs, and 150+ more
 - **JS bundle follower** (`--js-crawl N`) — follow same-host `<script src>` and scan the bundles where frontend secrets actually live
 - **Obfuscated-layer decode** — `\x`/`\u` escapes, `String.fromCharCode`, base64 blobs, `"a"+"b"` concat, reversed strings, one-hop constant propagation
-- **AST-derived literal gate** — setiap pola diberi daftar literal wajib (AND/OR) dari AST regexp, jadi regex mahal hanya dijalankan bila literalnya ada (±4× lebih cepat, tanpa kehilangan temuan)
+- **Aho-Corasick + windowed regex** (audit 2026-11b) — semua literal wajib dari semua pola dicari dalam satu pass; regex hanya dijalankan di jendela sekitar literal (±12× lebih cepat end-to-end, kesetaraan dengan full scan diuji; `--no-window` untuk debug)
+- **JWT-aware** — `alg:none` → CRITICAL, Supabase `role=service_role` → CRITICAL, Supabase anon → INFO
 - **AI-era tokens** — Cerebras, Voyage, Groq, Perplexity, xAI, OpenRouter, DeepSeek, Fireworks, Replicate, HuggingFace
-- **Parallel scanning** — automatic 8-worker regex dispatch for bodies >1MB
+- **Parallel scanning** — work-stealing regex dispatch for bodies >1MB
 - **Evidence-safe output** — `-o` menulis berkas mode `0600` tanpa escape ANSI (aman di-grep, tidak membocorkan warna)
 - **CI/pipeline friendly** — `--min-severity` dan `--fail-on-findings` (exit 2)
 - **Body-reuse mode** — scan `httpx -json -irr` output without re-fetching (`--httpx-json`)
@@ -43,7 +44,7 @@
 | **Database** | MongoDB, PostgreSQL, MySQL, Redis, SMTP, Oracle JDBC, generic credential URIs, .pgpass, .netrc |
 | **SSH/Keys** | RSA, EC, OpenSSH, DSA, PKCS8, PGP, PuTTY PPK |
 
-Full list: `patterns.go` (401 pola inti) + `patterns_extra.go` (47 pola hasil audit 2026-11).
+Full list: `patterns.go` (pola inti) + `patterns_extra.go` (47 pola audit 2026-11) + `patterns_2026b.go` (34 pola audit 2026-11b: Anthropic OAuth, OpenAI admin, AWS AppSync/secretAccessKey, Azure Q~/Service Bus/Cosmos/APIM/Logic App, GCP SA JSON, Cloudflare `cfat_`, Heroku `HRKU-`, GitLab `glrt-`/`glagent-`, CircleCI/Buildkite/Docker/Contentful, npm `_auth`, Docker `config.json`, Kafka JAAS, JDBC, PayPal `A21AA`, Plaid, webhook Slack/Google Chat/IFTTT, New Relic `NRII-`, MailerSend, age).
 
 ## Installation
 
@@ -121,8 +122,22 @@ go build -o secrethunter2 .
 | `--proxy` | — | Explicit proxy URL (default: HTTP(S)_PROXY env) | env |
 | `--cookie` | — | Cookie `name=value` sent with every request (repeatable) | — |
 | `--js-crawl` | — | Follow up to N same-host `<script src>` and scan them | 0 (off) |
-| `--no-decode` | — | Disable obfuscated-layer decode pass (±5× faster) | false |
+| `--no-decode` | — | Disable obfuscated-layer decode pass | false |
+| `--no-window` | — | Run gated regexes over the whole body (debug; slower) | false |
 | `--version` | — | Print version and exit | — |
+
+### Output & exit code
+
+- Baris teks (stdout dan `-o`): `[SEVERITY] Nama Layanan | nilai | url` — selalu satu baris
+  (newline/tab di dalam nilai, mis. private key PEM, di-escape menjadi `\n`/`\t`); nilai
+  dipotong 120 karakter seperti sebelumnya (`--json` memuat nilai penuh s/d 4096).
+- Baris identik (url + pola + nilai) hanya ditulis sekali.
+- Exit code: `0` normal · `1` error fatal (argumen, input tidak terbaca, **gagal menulis `-o`**) ·
+  `2` ada temuan + `--fail-on-findings` · `130` dihentikan Ctrl-C (hasil yang ada tetap di-flush;
+  Ctrl-C kedua = paksa keluar).
+- `--httpx-json`: baris JSONL raksasa (> 8× `--max-size`) dilewati tanpa menghentikan pembacaan;
+  header dibaca dari `raw_header`, atau dari map `header` bila `raw_header` tidak ada; body biner
+  (`content_type` image/font/…, atau U+FFFD/NUL dominan) dilewati, header-nya tetap di-scan.
 
 ## Severity Levels
 
@@ -152,7 +167,22 @@ cat subdomains.txt | httpx -json -irr -o httpx.json
 ./secrethunter2 --httpx-json httpx.json --scope target.com --json > findings.json
 ```
 
-## Performance (audit 2026-11)
+## Performance
+
+### audit 2026-11b — corpus sintetis (`tools/gencorpus`, 55 MB JSONL, 1503 record, 3 body 5–9 MB)
+
+Mode kontrak `--httpx-json … --scope target.test -o … -t 8 -silent`, WSL Arch 8 core:
+
+| | v2.4.0 | v2.5.0 |
+|---|---|---|
+| Waktu | 37.0 s | **3.0 s** |
+| Secret tertanam terdeteksi | 738/977 (75.5%) | **977/977 (100%)** |
+| FP pada record jebakan | 425 | **0** |
+| Baris output rusak (multi-baris) | 50 | **0** |
+
+Reproduksi: `go run ./tools/gencorpus -o /tmp/c.jsonl && tools/bench.sh /tmp/c.jsonl ./secrethunter2`.
+
+### audit 2026-11 — korpus JS nyata
 
 Ukur di WSL Arch (8 core), korpus JS nyata:
 

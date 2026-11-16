@@ -47,7 +47,7 @@ import (
 )
 
 const (
-	version   = "2.4.0"
+	version   = "2.5.0"
 	defaultUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 	maxBodyMB = 10
 	banner    = `
@@ -2378,7 +2378,11 @@ func forEachLine(r io.Reader, maxLine int, stop <-chan struct{}, fn func([]byte)
 		} else if line := bytes.TrimSpace(buf); len(line) > 0 {
 			fn(line)
 		}
-		buf = buf[:0]
+		if cap(buf) > 16<<20 {
+			buf = make([]byte, 0, 1<<20) // lepas buffer baris raksasa
+		} else {
+			buf = buf[:0]
+		}
 		tooLong = false
 		if e != nil {
 			if e == io.EOF {
@@ -2490,7 +2494,9 @@ func scanHTTPXJSON(cfg *Config, outWriter io.Writer, js *jsonStream, stats *outp
 			}
 		}
 		if int64(len(body)) > cfg.MaxBodyBytes {
-			body = body[:cfg.MaxBodyBytes]
+			// salin potongan supaya string hasil decode (bisa puluhan MB) bisa
+			// segera di-GC, bukan tertahan selama worker memindai 10 MB pertama.
+			body = strings.Clone(body[:cfg.MaxBodyBytes])
 		}
 		count++
 		select {
