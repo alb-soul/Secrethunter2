@@ -28,7 +28,7 @@
 - **Rate limiting** — global requests-per-second (`--rate`) and per-worker delay (`--delay`)
 - **Proxy support** — honors `HTTP_PROXY`/`HTTPS_PROXY` environment variables
 - **Streaming JSON output** — findings written live to stdout/file, no RAM accumulation
-- **Headless-friendly** — quiet, colored, or JSON; output to file; SIGINT-safe flush
+- **Server/CI-friendly** (tanpa browser) — quiet, colored, or JSON; output to file; SIGINT-safe flush
 
 ## Supported Patterns (partial list)
 
@@ -48,11 +48,36 @@ Full list: `patterns.go` (pola inti) + `patterns_extra.go` (47 pola audit 2026-1
 
 ## Installation
 
+Butuh **Go ≥ 1.21** (Arch: `pacman -S go` · Debian/Ubuntu: <https://go.dev/doc/install>).
+Tidak ada dependensi lain: Go stdlib murni (`net/http`), **tanpa Chromium/browser headless**.
+Cloudflare challenge ditembus lewat FlareSolverr (`-f http://localhost:8191`), bukan browser lokal.
+
 ```bash
-# Requires Go 1.21+
-git clone https://github.com/alb-soul/secrethunter2.git
-cd secrethunter2
+git clone https://github.com/alb-soul/Secrethunter2.git
+cd Secrethunter2
+./install.sh
+```
+
+`install.sh` mem-build dari source di direktori script lalu memasang **salinan file biasa**
+(bukan symlink) ke `/usr/local/bin/secrethunter2`, memakai `sudo` hanya bila direktori tujuan
+tidak bisa ditulis. Setelah itu ia memverifikasi `secrethunter2 -version` dan memperingatkan bila
+ada salinan lain di `PATH` yang mendahului `/usr/local/bin` (salinan itu tidak dihapus otomatis).
+
+```bash
+git pull && ./install.sh                  # update
+BINDIR="$HOME/.local/bin" ./install.sh    # tujuan lain (tanpa sudo); atau PREFIX=/opt/x → /opt/x/bin
+./install.sh --uninstall                  # hapus $BINDIR/secrethunter2 saja
+./install.sh --help
+```
+
+Installer tidak meng-install Go, tidak men-download apa pun, dan tidak mengubah `PATH`/shell rc.
+Inilah kontrak yang dipakai Recon-wild (`reconin3`/`scantarget3` memanggil `secrethunter2` lewat `PATH`).
+
+Build manual untuk development (tanpa memasang):
+
+```bash
 go build -o secrethunter2 .
+go vet ./... && go test ./...
 ```
 
 ## Quick Start
@@ -108,7 +133,7 @@ go build -o secrethunter2 .
 | `--timeout` | — | HTTP request timeout (seconds) | 30 |
 | `--max-size` | — | Max response body MB to scan | 10 |
 | `-f` | `--flaresolverr` | FlareSolverr base URL | — |
-| `-ua` | — | Custom User-Agent | Chrome 124 |
+| `-ua` | — | Custom User-Agent | string UA Chrome 124 (hanya header; tidak memakai browser) |
 | `-H` | `--header` | Extra request header (repeatable) | — |
 | `-o` | `--output` | Write findings to file | — |
 | `--json` | — | Output findings as JSON (streaming) | false |
